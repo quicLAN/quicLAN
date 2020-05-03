@@ -26,12 +26,10 @@ namespace winrt::quicLANBG::implementation
 
         try {
             m_serverDatagramSocket.BindEndpointAsync({ SERVER_ADDRESS }, SERVER_PORT).get();
-            //m_serverDatagramSocket.BindServiceNameAsync(SERVER_PORT).get();
-            //m_streamSocketListener.BindEndpointAsync({ SERVER_ADDRESS }, SERVER_PORT).get();
-            //m_streamSocketListener.BindServiceNameAsync(SERVER_PORT).get();
         } catch (winrt::hresult_error const& ex) {
             std::cout << "ERROR!" << ex.code() << ": " << ex.message().data() << std::endl;
         }
+        //m_serverDatagramSocket.Information().LocalPort
 
         try
         {
@@ -70,7 +68,7 @@ namespace winrt::quicLANBG::implementation
 
             tunnel.ConnectAsync(serverHostname, SERVER_PORT).get(); // without this, no crash at start(), but no connection either. doing it async doesn't help either.
 
-            uint32_t mtuSize = 1200;
+            //uint32_t mtuSize = MAX_PACKET_SIZE;
             std::vector<HostName> IPv4AddrList;
             std::vector<HostName> IPv6AddrList;
             VpnRouteAssignment route;
@@ -92,9 +90,6 @@ namespace winrt::quicLANBG::implementation
             //auto ifIdFactory = IVpnInterfaceIdFactory();
             auto ifId = VpnInterfaceId(
                 { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1 }
-                //{ 0xfd, 0x71,0x75,0x69,0x63,0x6c,0x61,0x6e,0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1 }
-                //{ 0xfd,0x71,} 0x75,0x69, 0x63,0x6c,0x61,0x6e, }
-                //0xfe,0x80, 0x00, 0x0, 0x0, 0x0, 0x0, 0x0, 0xad, 0xec,0x74,0x1c,0x71,0x17,0x7e,0xf7 }
             );
 
             //channel.StartExistingTransports(
@@ -145,7 +140,7 @@ namespace winrt::quicLANBG::implementation
     {
     }
 
-    void VpnPlugin::Encapsulate(VpnChannel const& channel, VpnPacketBufferList const& packets, VpnPacketBufferList const& encapulatedPackets)
+    void VpnPlugin::Encapsulate(VpnChannel const& /*channel*/, VpnPacketBufferList const& packets, VpnPacketBufferList const& encapulatedPackets)
     {
         //auto lengthPacket = channel.GetVpnSendPacketBuffer();
         uint32_t length = 0;

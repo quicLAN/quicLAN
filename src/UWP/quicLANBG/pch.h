@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 //#include <Windows.h>
 #include <winerror.h>
+#include <sal.h>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -23,3 +24,8 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <stdexcept>
+
+#include <msquichelper.h>
+
+#include "quiclan.h"

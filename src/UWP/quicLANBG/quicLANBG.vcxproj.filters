@@ -14,12 +14,13 @@
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
     <ClCompile Include="VpnBackgroundTask.cpp" />
     <ClCompile Include="VpnPlugin.cpp" />
+    <ClCompile Include="quiclan.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="VpnBackgroundTask.h" />
     <ClInclude Include="VpnPlugin.h" />
-    <ClInclude Include="strutil.h" />
+    <ClInclude Include="quiclan.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
