@@ -1,58 +1,65 @@
+/*
+    Licensed under the MIT License.
+*/
 #pragma once
 
-struct QuicLanServer {
+typedef struct QuicLanEngine QuicLanEngine;
 
-    bool Initialize();
-
-    bool
-    Connect(
-        _In_opt_ const char* ServerAddress,
-        _In_opt_ uint16_t ServerPort,
-        _Out_ char* ClientIpv4Addr,
-        _Out_ char* ClientIpv6Addr);
-
-    void
-    SetVpnClientPort(
-        _In_ uint16_t ClientPort);
-
-    ~QuicLanServer();
-
-    static
-    _Function_class_(QUIC_LISTENER_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ServerListenerCallback(
-        _In_ HQUIC Listener,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_LISTENER_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_CONNECTION_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ClientConnectionCallback(
-        _In_ HQUIC Connection,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_CONNECTION_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_STREAM_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ControlStreamCallback(
-        _In_ HQUIC Stream,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_STREAM_EVENT* Event);
-
-    const QUIC_API_TABLE* MsQuic;
-    HQUIC Registration;
-    HQUIC Session;
-    QUIC_SEC_CONFIG* SecurityConfig;
-
-    QUIC_EVENT ConnectedEvent;
-
-    HQUIC PrimaryConnection;
-    std::vector<HQUIC> Peers;
-
-    uint16_t MaxDatagramLength = 1000;
+enum QuicLanTunnelEventType {
+    InvalidTunnelEvent,
+    TunnelIpAddressReady,
+    TunnelPacketReceived,
+    TunnelDisconnected
 };
+
+struct TunnelIpAddressReadyEvent {
+    const char* IPv4Addr;
+    const char* IPv6Addr;
+};
+
+struct TunnelPacketReceivedEvent {
+    const uint8_t * const Packet;
+    uint16_t PacketLength;
+};
+
+struct QuicLanTunnelEvent {
+    QuicLanTunnelEventType Type;
+    union {
+        TunnelIpAddressReadyEvent IpAddressReady;
+        TunnelPacketReceivedEvent PacketReceived;
+    };
+};
+
+typedef
+void
+(*FN_TUNNEL_EVENT_CALLBACK)(
+    QuicLanTunnelEvent* Event);
+
+bool
+InitializeQuicLanEngine(
+    _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+    _Out_ QuicLanEngine** Engine);
+
+bool
+AddServer(
+    _In_ QuicLanEngine* Engine,
+    _In_ const char* ServerAddress,
+    _In_ uint16_t ServerPort);
+
+bool
+Start(
+    _In_ QuicLanEngine* Engine);
+
+bool
+Send(
+    _In_ QuicLanEngine* Engine,
+    _In_ const uint8_t* Packet,
+    _In_ uint16_t PacketLength);
+
+bool
+Stop(
+    _In_ QuicLanEngine* Engine);
+
+void
+UninitializeQuicLanEngine(
+    _In_ QuicLanEngine* Engine);

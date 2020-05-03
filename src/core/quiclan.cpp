@@ -1,4 +1,7 @@
-#include "pch.h"
+/*
+    Licensed under the MIT License.
+*/
+#include "precomp.h"
 
 const QUIC_REGISTRATION_CONFIG RegConfig = { "quiclan", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
 const QUIC_BUFFER Alpn = { sizeof("quiclan-00") - 1, (uint8_t*)"quiclan-00" };
@@ -9,10 +12,63 @@ const uint32_t KeepAliveMs = 5000;
 const uint32_t CertificateValidationFlags = QUIC_CERTIFICATE_FLAG_DISABLE_CERT_VALIDATION; // TODO: Remove this eventually
 const uint16_t BiDiStreamCount = 1;
 
-#define THROW_MSQUIC_ERROR(__Error, __Message) throw std::system_error(std::error_code((int)__Error, std::system_category()), __Message)
+struct QuicLanEngine {
+
+    bool
+    Initialize(
+        _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler);
+
+    ~QuicLanEngine();
+
+    static
+    _Function_class_(QUIC_LISTENER_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ServerListenerCallback(
+        _In_ HQUIC Listener,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_LISTENER_EVENT* Event);
+
+    static
+    _Function_class_(QUIC_CONNECTION_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ClientConnectionCallback(
+        _In_ HQUIC Connection,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_CONNECTION_EVENT* Event);
+
+    static
+    _Function_class_(QUIC_STREAM_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ControlStreamCallback(
+        _In_ HQUIC Stream,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_STREAM_EVENT* Event);
+
+    const QUIC_API_TABLE* MsQuic;
+    HQUIC Registration;
+    HQUIC Session;
+    QUIC_SEC_CONFIG* SecurityConfig;
+
+    FN_TUNNEL_EVENT_CALLBACK EventHandler;
+
+    char ServerAddress[255];
+    uint16_t ServerPort;
+
+    QUIC_EVENT ConnectedEvent;
+
+    HQUIC PrimaryConnection;
+    std::vector<HQUIC> Peers;
+
+    uint16_t MaxDatagramLength = 1000;
+};
 
 bool
-QuicLanServer::Initialize() {
+QuicLanEngine::Initialize(
+    _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler)
+{
     QuicPlatformSystemLoad();
 
     QUIC_STATUS Status = QuicPlatformInitialize();
@@ -63,12 +119,14 @@ QuicLanServer::Initialize() {
         return false;
     }
 
+    this->EventHandler = EventHandler;
+
     QuicEventInitialize(&ConnectedEvent, TRUE, FALSE);
 
     return true;
 };
 
-QuicLanServer::~QuicLanServer() {
+QuicLanEngine::~QuicLanEngine() {
     QuicEventUninitialize(ConnectedEvent);
 
     if (MsQuic != nullptr) {
@@ -93,12 +151,12 @@ QuicLanServer::~QuicLanServer() {
 _Function_class_(QUIC_LISTENER_CALLBACK)
 QUIC_STATUS
 QUIC_API
-QuicLanServer::ServerListenerCallback(
+QuicLanEngine::ServerListenerCallback(
     _In_ HQUIC Listener,
     _In_opt_ void* Context,
     _Inout_ QUIC_LISTENER_EVENT* Event)
 {
-    auto This = (QuicLanServer*)Context;
+    auto This = (QuicLanEngine*)Context;
 
     switch (Event->Type) {
     case QUIC_LISTENER_EVENT_NEW_CONNECTION: {
@@ -149,12 +207,12 @@ QuicLanServer::ServerListenerCallback(
 _Function_class_(QUIC_CONNECTION_CALLBACK)
 QUIC_STATUS
 QUIC_API
-QuicLanServer::ClientConnectionCallback(
+QuicLanEngine::ClientConnectionCallback(
     _In_ HQUIC Connection,
     _In_opt_ void* Context,
     _Inout_ QUIC_CONNECTION_EVENT* Event)
 {
-    auto This = (QuicLanServer*)Context;
+    auto This = (QuicLanEngine*)Context;
 
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
@@ -203,37 +261,34 @@ QuicLanServer::ClientConnectionCallback(
 _Function_class_(QUIC_STREAM_CALLBACK)
 QUIC_STATUS
 QUIC_API
-QuicLanServer::ControlStreamCallback(
+QuicLanEngine::ControlStreamCallback(
     _In_ HQUIC Stream,
     _In_opt_ void* Context,
     _Inout_ QUIC_STREAM_EVENT* Event)
 {
-    // TODO: 
+    // TODO:
     return QUIC_STATUS_SUCCESS;
 }
 
 bool
-QuicLanServer::Connect(
-    _In_opt_ const char* ServerAddress,
-    _In_opt_ uint16_t ServerPort,
-    _Out_ char* ClientIpv4Addr,
-    _Out_ char* ClientIpv6Addr)
+Start(
+    _In_ QuicLanEngine* Engine)
 {
     QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
-    if (ServerAddress != nullptr) {
+    if (Engine->ServerAddress != nullptr) {
         //
         // Start a connection to an existing VPN, and wait for the connection
         // to complete before returning from this call.
         //
         HQUIC PrimaryConnection = nullptr;
-        Status = MsQuic->ConnectionOpen(Session, QuicLanServer::ClientConnectionCallback, this, &PrimaryConnection);
+        Status = Engine->MsQuic->ConnectionOpen(Engine->Session, QuicLanEngine::ClientConnectionCallback, Engine, &PrimaryConnection);
         if (QUIC_FAILED(Status)) {
             printf("Failed to open connection 0x%x\n", Status);
             return false;
         }
 
         Status =
-            MsQuic->SetParam(
+            Engine->MsQuic->SetParam(
                 PrimaryConnection,
                 QUIC_PARAM_LEVEL_CONNECTION,
                 QUIC_PARAM_CONN_DATAGRAMS,
@@ -245,7 +300,7 @@ QuicLanServer::Connect(
         }
 
         Status =
-            MsQuic->SetParam(
+            Engine->MsQuic->SetParam(
                 PrimaryConnection,
                 QUIC_PARAM_LEVEL_CONNECTION,
                 QUIC_PARAM_CONN_KEEP_ALIVE,
@@ -257,7 +312,7 @@ QuicLanServer::Connect(
         }
 
         Status =
-            MsQuic->SetParam(
+            Engine->MsQuic->SetParam(
                 PrimaryConnection,
                 QUIC_PARAM_LEVEL_CONNECTION,
                 QUIC_PARAM_CONN_CERT_VALIDATION_FLAGS,
@@ -269,7 +324,7 @@ QuicLanServer::Connect(
         }
 
         Status =
-            MsQuic->SetParam(
+            Engine->MsQuic->SetParam(
                 PrimaryConnection,
                 QUIC_PARAM_LEVEL_CONNECTION,
                 QUIC_PARAM_CONN_PEER_BIDI_STREAM_COUNT,
@@ -280,22 +335,25 @@ QuicLanServer::Connect(
             return false;
         }
 
-        Status = MsQuic->ConnectionStart(PrimaryConnection, AF_UNSPEC, ServerAddress, ServerPort);
+        Status = Engine->MsQuic->ConnectionStart(PrimaryConnection, AF_UNSPEC, Engine->ServerAddress, Engine->ServerPort);
         if (QUIC_FAILED(Status)) {
             printf("Failed to start connection 0x%x", Status);
             return false;
         }
 
-        if (!QuicEventWaitWithTimeout(ConnectedEvent, IdleTimeoutMs)) {
+        if (!QuicEventWaitWithTimeout(Engine->ConnectedEvent, IdleTimeoutMs)) {
             printf("Failed to connect within timeout");
             return false;
         }
-        ClientIpv4Addr = "169.254.10.2";
-        ClientIpv6Addr = "[fd71:7569:636c:616e::2]";
+        QuicLanTunnelEvent Event{};
+        Event.Type = TunnelIpAddressReady;
+        Event.IpAddressReady.IPv4Addr = "169.254.10.2";
+        Event.IpAddressReady.IPv6Addr = "[fd71:7569:636c:616e::2]";
+        Engine->EventHandler(&Event);
     }
     else {
-        ClientIpv4Addr = "169.254.10.1";
-        ClientIpv6Addr = "[fd71:7569:636c:616e::1]";
+        // ClientIpv4Addr = "169.254.10.1";
+        // ClientIpv6Addr = "[fd71:7569:636c:616e::1]";
     }
 
 
@@ -303,9 +361,29 @@ QuicLanServer::Connect(
     return true;
 }
 
-void
-SetVpnClientPort(
-    _In_ uint16_t ClientPort)
+bool
+InitializeQuicLanEngine(
+    _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+    _Out_ QuicLanEngine** Engine)
 {
-    // TODO:
+    *Engine = nullptr;
+
+    QuicLanEngine* NewEngine = new QuicLanEngine;
+    if (!NewEngine->Initialize(EventHandler)) {
+        delete NewEngine;
+        return false;
+    }
+    *Engine = NewEngine;
+    return true;
+}
+
+bool
+AddServer(
+    _In_ QuicLanEngine* Engine,
+    _In_ const char* ServerAddress,
+    _In_ uint16_t ServerPort)
+{
+    strncpy(Engine->ServerAddress, ServerAddress, sizeof(Engine->ServerAddress));
+    Engine->ServerPort = ServerPort;
+    return true;
 }
