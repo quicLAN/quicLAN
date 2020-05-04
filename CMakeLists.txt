@@ -1,0 +1,21 @@
+
+cmake_minimum_required(VERSION 3.17)
+
+project(quiclan)
+
+# Necessary to include msquic headers
+if ("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
+    set(QUIC_PLATFORM "windows")
+    set(QUICLAN_C_FLAGS "-DWIN32_LEAN_AND_MEAN -DSECURITY_WIN32 /MP")
+else()
+    set(QUIC_PLATFORM "linux")
+    set(QUICLAN_COMMON_FLAGS "-DQUIC_PLATFORM_LINUX -fms-extensions -fPIC -pthread -Wl,--no-as-needed -ldl")
+
+    set(QUICLAN_C_FLAGS "${QUICLAN_COMMON_FLAGS}")
+    set(QUICLAN_CXX_FLAGS "${QUICLAN_COMMON_FLAGS} --std=c++17 -g -Wno-reorder -Wno-sign-compare -Wno-format")
+endif()
+
+include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/src/inc)
+include_directories(${CMAKE_SOURCE_DIR}/src/core)
+
+add_subdirectory(src/core)
