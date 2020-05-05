@@ -387,3 +387,10 @@ AddServer(
     Engine->ServerPort = ServerPort;
     return true;
 }
+
+void
+UninitializeQuicLanEngine(
+    _In_ QuicLanEngine* Engine)
+{
+    delete Engine;
+}

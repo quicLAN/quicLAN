@@ -5,7 +5,7 @@ set(SOURCES
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${QUICLAN_C_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${QUICLAN_CXX_FLAGS}")
 
-add_library(core STATIC ${SOURCES})
+add_library(quiclancore STATIC ${SOURCES})
 
 #target_compile_options(core PRIVATE
 #     $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
