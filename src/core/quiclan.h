@@ -9,12 +9,14 @@ enum QuicLanTunnelEventType {
     InvalidTunnelEvent,
     TunnelIpAddressReady,
     TunnelPacketReceived,
+    TunnelSendComplete,
     TunnelDisconnected
 };
 
 struct TunnelIpAddressReadyEvent {
     const char* IPv4Addr;
     const char* IPv6Addr;
+    uint16_t Mtu;
 };
 
 struct TunnelPacketReceivedEvent {
@@ -22,11 +24,16 @@ struct TunnelPacketReceivedEvent {
     uint16_t PacketLength;
 };
 
+struct TunnelSendCompleteEvent {
+    uint8_t * Packet;
+};
+
 struct QuicLanTunnelEvent {
     QuicLanTunnelEventType Type;
     union {
-        TunnelIpAddressReadyEvent IpAddressReady;
-        TunnelPacketReceivedEvent PacketReceived;
+        TunnelIpAddressReadyEvent   IpAddressReady;
+        TunnelPacketReceivedEvent   PacketReceived;
+        TunnelSendCompleteEvent     SendComplete;
     };
 };
 

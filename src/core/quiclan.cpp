@@ -39,6 +39,15 @@ struct QuicLanEngine {
         _Inout_ QUIC_CONNECTION_EVENT* Event);
 
     static
+    _Function_class_(QUIC_CONNECTION_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ServerConnectionCallback(
+        _In_ HQUIC Connection,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_CONNECTION_EVENT* Event);
+
+    static
     _Function_class_(QUIC_STREAM_CALLBACK)
     QUIC_STATUS
     QUIC_API
@@ -60,6 +69,7 @@ struct QuicLanEngine {
     QUIC_EVENT ConnectedEvent;
 
     HQUIC PrimaryConnection;
+    HQUIC Listener;
     std::vector<HQUIC> Peers;
 
     uint16_t MaxDatagramLength = 1000;
@@ -119,6 +129,18 @@ QuicLanEngine::Initialize(
         return false;
     }
 
+    Status =
+        MsQuic->SetParam(
+            Session,
+            QUIC_PARAM_LEVEL_SESSION,
+            QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED,
+            sizeof(DatagramsEnabled),
+            &DatagramsEnabled);
+    if (QUIC_FAILED(Status)) {
+        printf("SetParam(QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED) failed, 0x%x\n", Status);
+        return false;
+    }
+
     this->EventHandler = EventHandler;
 
     QuicEventInitialize(&ConnectedEvent, TRUE, FALSE);
@@ -160,15 +182,16 @@ QuicLanEngine::ServerListenerCallback(
 
     switch (Event->Type) {
     case QUIC_LISTENER_EVENT_NEW_CONNECTION: {
+        // TODO if (Event->NEW_CONNECTION->Info.LocalAddress == VPN tunnel address), drop
         QUIC_STATUS Status =
             This->MsQuic->SetParam(
                 Event->NEW_CONNECTION.Connection,
                 QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_DATAGRAMS,
+                QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED,
                 sizeof(DatagramsEnabled),
                 &DatagramsEnabled);
         if (QUIC_FAILED(Status)) {
-            printf("SetParam(QUIC_PARAM_CONN_DATAGRAMS) failed, 0x%x!\n", Status);
+            printf("SetParam(QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED) failed, 0x%x!\n", Status);
         }
         Status =
             This->MsQuic->SetParam(
@@ -195,7 +218,7 @@ QuicLanEngine::ServerListenerCallback(
         Event->NEW_CONNECTION.SecurityConfig = This->SecurityConfig;
         This->Peers.push_back(Event->NEW_CONNECTION.Connection); // TODO: be smarter about this.
         //Event->NEW_CONNECTION.Info->RemoteAddress // Map this to the connection/inner IP address
-        This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ClientConnectionCallback, This);
+        This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, This);
         break;
     }
     default:
@@ -233,23 +256,107 @@ QuicLanEngine::ClientConnectionCallback(
         printf("[conn][%p] Complete\n", Connection);
         This->MsQuic->ConnectionClose(Connection);
         break;
+    case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
+        // TODO: Open stream for authentication and control path
+        break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
         // TODO: This will be the main workhorse when tunneled traffic flows.
         // Take the datagram and send it over loopback to the VPN interface.
         break;
 
-    case QUIC_CONNECTION_EVENT_DATAGRAM_MAX_LENGTH_CHANGED:
-        This->MaxDatagramLength = Event->DATAGRAM_MAX_LENGTH_CHANGED.Length;
+    case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
+        if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
+            This->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+
+            // TODO: this is a hack just for development. Eventually, this will
+            // pick an unused IP address based on the info from the control stream.
+            QuicLanTunnelEvent Event{};
+            Event.Type = TunnelIpAddressReady;
+            Event.IpAddressReady.Mtu = This->MaxDatagramLength;
+            // Client
+            Event.IpAddressReady.IPv4Addr = "169.254.10.2";
+            Event.IpAddressReady.IPv6Addr = "[fd71:7569:636c:616e::2]";
+            This->EventHandler(&Event);
+        }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
-        switch (Event->DATAGRAM_SEND_STATE_CHANGED.State) {
-        case QUIC_DATAGRAM_SEND_ACKNOWLEDGED:
-        case QUIC_DATAGRAM_SEND_LOST_DISCARDED:
-        case QUIC_DATAGRAM_SEND_CANCELED:
-            // TODO: Free the datagram send buffer.
-            break;
-        default:
-            break;
+        if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(Event->DATAGRAM_SEND_STATE_CHANGED.State)) {
+            QuicLanTunnelEvent TunnelEvent{};
+            TunnelEvent.Type = TunnelSendComplete;
+            TunnelEvent.SendComplete.Packet = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
+            This->EventHandler(&TunnelEvent);
+            Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
+        }
+        break;
+    default:
+        break;
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+_Function_class_(QUIC_CONNECTION_CALLBACK)
+QUIC_STATUS
+QUIC_API
+QuicLanEngine::ServerConnectionCallback(
+    _In_ HQUIC Connection,
+    _In_opt_ void* Context,
+    _Inout_ QUIC_CONNECTION_EVENT* Event)
+{
+    auto This = (QuicLanEngine*)Context;
+
+    switch (Event->Type) {
+    case QUIC_CONNECTION_EVENT_CONNECTED:
+        printf("[conn][%p] Connected\n", Connection);
+        QuicEventSet(This->ConnectedEvent);
+        break;
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
+        if (Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status != QUIC_STATUS_CONNECTION_IDLE) {
+            printf("[conn][%p] Shutdown by peer, 0x%x\n", Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
+        }
+        // TODO: Remove peer from list.
+        break;
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
+        printf("[conn][%p] Shutdown by peer, 0x%llx\n", Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
+        // TODO: Remove peer from list.
+        break;
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+        printf("[conn][%p] Complete\n", Connection);
+        This->MsQuic->ConnectionClose(Connection);
+        break;
+    case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
+        // TODO: Authenticate client
+        // TODO: start control stream
+        break;
+    case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
+        // TODO: This will be the main workhorse when tunneled traffic flows.
+        // Check that the packet is destined for this server, and send it to
+        /// the VPN interface.
+        // If not destined for this server, forward to the correct peer.
+        break;
+
+    case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
+        if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
+            This->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+
+            // TODO: this is a hack just for development. Eventually, this will
+            // pick an unused IP address based on the info from the control stream.
+            QuicLanTunnelEvent Event{};
+            Event.Type = TunnelIpAddressReady;
+            Event.IpAddressReady.Mtu = This->MaxDatagramLength;
+            // Server
+            Event.IpAddressReady.IPv4Addr = "169.254.10.1";
+            Event.IpAddressReady.IPv6Addr  = "[fd71:7569:636c:616e::1]";
+            This->EventHandler(&Event);
+        }
+        break;
+    case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
+        if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(Event->DATAGRAM_SEND_STATE_CHANGED.State)) {
+            // TODO: Don't send event for forwarded datagrams.
+            QuicLanTunnelEvent TunnelEvent{};
+            TunnelEvent.Type = TunnelSendComplete;
+            TunnelEvent.SendComplete.Packet = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
+            This->EventHandler(&TunnelEvent);
+            Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
         }
         break;
     default:
@@ -291,7 +398,7 @@ Start(
             Engine->MsQuic->SetParam(
                 PrimaryConnection,
                 QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_DATAGRAMS,
+                QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED,
                 sizeof(DatagramsEnabled),
                 &DatagramsEnabled);
         if (QUIC_FAILED(Status)) {
@@ -337,26 +444,27 @@ Start(
 
         Status = Engine->MsQuic->ConnectionStart(PrimaryConnection, AF_UNSPEC, Engine->ServerAddress, Engine->ServerPort);
         if (QUIC_FAILED(Status)) {
-            printf("Failed to start connection 0x%x", Status);
+            printf("Failed to start connection 0x%x\n", Status);
             return false;
         }
-
-        if (!QuicEventWaitWithTimeout(Engine->ConnectedEvent, IdleTimeoutMs)) {
-            printf("Failed to connect within timeout");
-            return false;
-        }
-        QuicLanTunnelEvent Event{};
-        Event.Type = TunnelIpAddressReady;
-        Event.IpAddressReady.IPv4Addr = "169.254.10.2";
-        Event.IpAddressReady.IPv6Addr = "[fd71:7569:636c:616e::2]";
-        Engine->EventHandler(&Event);
-    }
-    else {
-        // ClientIpv4Addr = "169.254.10.1";
-        // ClientIpv6Addr = "[fd71:7569:636c:616e::1]";
+        Engine->PrimaryConnection = PrimaryConnection;
     }
 
+    Status =
+        Engine->MsQuic->ListenerOpen(
+            Engine->Session,
+            QuicLanEngine::ServerListenerCallback,
+            Engine,
+            &Engine->Listener);
+    if (QUIC_FAILED(Status)) {
+        printf("Failed to start listener, 0x%x\n", Status);
+        return false;
+    }
 
+    Status =
+        Engine->MsQuic->ListenerStart(
+            Engine->Listener,
+            nullptr); // TODO: Exclude VPN interface somehow?
 
     return true;
 }
