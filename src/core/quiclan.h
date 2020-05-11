@@ -20,7 +20,7 @@ struct TunnelIpAddressReadyEvent {
 };
 
 struct TunnelPacketReceivedEvent {
-    const uint8_t * const Packet;
+    const uint8_t * Packet;
     uint16_t PacketLength;
 };
 
