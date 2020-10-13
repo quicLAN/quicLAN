@@ -6,11 +6,10 @@
 const QUIC_REGISTRATION_CONFIG RegConfig = { "quiclan", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
 const QUIC_BUFFER Alpn = { sizeof("quiclan-00") - 1, (uint8_t*)"quiclan-00" };
 const uint16_t UdpPort = 7490;
-const uint64_t IdleTimeoutMs = 25000;
+const uint64_t IdleTimeoutMs = 30000;
 const uint64_t MaxBytesPerKey = 1000000;
 const uint8_t DatagramsEnabled = TRUE;
 const uint32_t KeepAliveMs = 5000;
-const uint32_t CertificateValidationFlags = QUIC_CERTIFICATE_FLAG_DISABLE_CERT_VALIDATION; // TODO: Remove this eventually
 const uint16_t BiDiStreamCount = 1;
 
 struct QuicLanEngine {
@@ -59,8 +58,8 @@ struct QuicLanEngine {
 
     const QUIC_API_TABLE* MsQuic;
     HQUIC Registration;
-    HQUIC Session;
-    QUIC_SEC_CONFIG* SecurityConfig;
+    HQUIC SecurityConfig;
+    HQUIC ClientConfig;
 
     FN_TUNNEL_EVENT_CALLBACK EventHandler;
 
@@ -100,48 +99,6 @@ QuicLanEngine::Initialize(
         return false;
     }
 
-    Status = MsQuic->SessionOpen(Registration, &Alpn, 1, nullptr, &Session);
-    if (QUIC_FAILED(Status)) {
-        printf("SessionOpen failed, 0x%x!\n", Status);
-        return false;
-    }
-
-    Status =
-        MsQuic->SetParam(
-            Session,
-            QUIC_PARAM_LEVEL_SESSION,
-            QUIC_PARAM_SESSION_IDLE_TIMEOUT,
-            sizeof(IdleTimeoutMs),
-            &IdleTimeoutMs);
-    if (QUIC_FAILED(Status)) {
-        printf("SetParam(QUIC_PARAM_SESSION_IDLE_TIMEOUT) failed, 0x%x!\n", Status);
-        return false;
-    }
-
-    Status =
-        MsQuic->SetParam(
-            Session,
-            QUIC_PARAM_LEVEL_SESSION,
-            QUIC_PARAM_SESSION_MAX_BYTES_PER_KEY,
-            sizeof(MaxBytesPerKey),
-            &MaxBytesPerKey);
-    if (QUIC_FAILED(Status)) {
-        printf("SetParam(QUIC_PARAM_SESSION_MAX_BYTES_PER_KEY) failed, 0x%x!\n", Status);
-        return false;
-    }
-
-    Status =
-        MsQuic->SetParam(
-            Session,
-            QUIC_PARAM_LEVEL_SESSION,
-            QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED,
-            sizeof(DatagramsEnabled),
-            &DatagramsEnabled);
-    if (QUIC_FAILED(Status)) {
-        printf("SetParam(QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED) failed, 0x%x\n", Status);
-        return false;
-    }
-
     this->EventHandler = EventHandler;
 
     QuicEventInitialize(&ConnectedEvent, TRUE, FALSE);
@@ -159,11 +116,11 @@ QuicLanEngine::~QuicLanEngine() {
         for (HQUIC Peer : Peers) {
             MsQuic->ConnectionClose(Peer);
         }
-        if (Session != nullptr) {
-            MsQuic->SessionClose(Session); // Waits on all connections to be cleaned up.
+        if (SecurityConfig != nullptr) {
+            MsQuic->ConfigurationClose(SecurityConfig);
         }
         if (Registration != nullptr) {
-            MsQuic->RegistrationClose(Registration);
+            MsQuic->RegistrationClose(Registration); // Waits on all connections to be cleaned up.
         }
         MsQuicClose(MsQuic);
     }
@@ -184,39 +141,11 @@ QuicLanEngine::ServerListenerCallback(
     switch (Event->Type) {
     case QUIC_LISTENER_EVENT_NEW_CONNECTION: {
         // TODO if (Event->NEW_CONNECTION->Info.LocalAddress == VPN tunnel address), drop
-        QUIC_STATUS Status =
-            This->MsQuic->SetParam(
-                Event->NEW_CONNECTION.Connection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED,
-                sizeof(DatagramsEnabled),
-                &DatagramsEnabled);
+        QUIC_STATUS Status = This->MsQuic->ConnectionSetConfiguration(Event->NEW_CONNECTION.Connection, This->SecurityConfig);
         if (QUIC_FAILED(Status)) {
-            printf("SetParam(QUIC_PARAM_SESSION_DATAGRAM_RECEIVE_ENABLED) failed, 0x%x!\n", Status);
+            printf("Server failed to set config on client connection, 0x%x!\n", Status);
+            return Status;
         }
-        Status =
-            This->MsQuic->SetParam(
-                Event->NEW_CONNECTION.Connection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_KEEP_ALIVE,
-                sizeof(KeepAliveMs),
-                &KeepAliveMs);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set keep alive 0x%x\n", Status);
-            return false;
-        }
-        Status =
-            This->MsQuic->SetParam(
-                Event->NEW_CONNECTION.Connection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_PEER_BIDI_STREAM_COUNT,
-                sizeof(BiDiStreamCount),
-                &BiDiStreamCount);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set peer stream count 0x%x\n", Status);
-            return false;
-        }
-        Event->NEW_CONNECTION.SecurityConfig = This->SecurityConfig;
         This->Peers.push_back(Event->NEW_CONNECTION.Connection); // TODO: be smarter about this.
         //Event->NEW_CONNECTION.Info->RemoteAddress // Map this to the connection/inner IP address
         This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, This);
@@ -394,67 +323,63 @@ Start(
     _In_ QuicLanEngine* Engine)
 {
     QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
+    QUIC_SETTINGS Settings{};
+    QUIC_CREDENTIAL_CONFIG CredConfig{};
     if (strlen(Engine->ServerAddress) != 0) {
         //
         // Start a connection to an existing VPN, and wait for the connection
         // to complete before returning from this call.
         //
+        Settings.IsSetFlags = 0;
+
+        Settings.IdleTimeoutMs = IdleTimeoutMs;
+        Settings.IsSet.IdleTimeoutMs = true;
+        Settings.MaxBytesPerKey = MaxBytesPerKey;
+        Settings.IsSet.MaxBytesPerKey = true;
+        Settings.KeepAliveIntervalMs = KeepAliveMs;
+        Settings.IsSet.KeepAliveIntervalMs = true;
+        Settings.DatagramReceiveEnabled = true;
+        Settings.IsSet.DatagramReceiveEnabled = true;
+
+        CredConfig.Type = QUIC_CREDENTIAL_TYPE_NONE;
+        CredConfig.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
+        CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;  // TODO: Remove this eventually
+        Status =
+            Engine->MsQuic->ConfigurationOpen(
+                Engine->Registration,
+                &Alpn,
+                1,
+                &Settings,
+                sizeof(Settings),
+                nullptr,
+                &Engine->ClientConfig);
+        if (QUIC_FAILED(Status)) {
+            printf("Failed to open Client config 0x%x!\n", Status);
+            return false;
+        }
+
+        Status =
+            Engine->MsQuic->ConfigurationLoadCredential(
+                Engine->ClientConfig,
+                &CredConfig);
+        if (QUIC_FAILED(Status)) {
+            printf("Failed to load client config, 0x%x!\n", Status);
+            return false;
+        }
+
         HQUIC PrimaryConnection = nullptr;
-        Status = Engine->MsQuic->ConnectionOpen(Engine->Session, QuicLanEngine::ClientConnectionCallback, Engine, &PrimaryConnection);
+        Status = Engine->MsQuic->ConnectionOpen(
+            Engine->Registration,
+            QuicLanEngine::ClientConnectionCallback,
+            Engine,
+            &PrimaryConnection);
         if (QUIC_FAILED(Status)) {
             printf("Failed to open connection 0x%x\n", Status);
             return false;
         }
 
-        Status =
-            Engine->MsQuic->SetParam(
-                PrimaryConnection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_DATAGRAM_RECEIVE_ENABLED,
-                sizeof(DatagramsEnabled),
-                &DatagramsEnabled);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to enable Datagrams on primary connection 0x%x\n", Status);
-            return false;
-        }
 
-        Status =
-            Engine->MsQuic->SetParam(
-                PrimaryConnection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_KEEP_ALIVE,
-                sizeof(KeepAliveMs),
-                &KeepAliveMs);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set keep alive 0x%x\n", Status);
-            return false;
-        }
-
-        Status =
-            Engine->MsQuic->SetParam(
-                PrimaryConnection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_CERT_VALIDATION_FLAGS,
-                sizeof(CertificateValidationFlags),
-                &CertificateValidationFlags);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set cert validation flags 0x%x\n", Status);
-            return false;
-        }
-
-        Status =
-            Engine->MsQuic->SetParam(
-                PrimaryConnection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_PEER_BIDI_STREAM_COUNT,
-                sizeof(BiDiStreamCount),
-                &BiDiStreamCount);
-        if (QUIC_FAILED(Status)) {
-            printf("Failed to set peer stream count 0x%x\n", Status);
-            return false;
-        }
-
-        Status = Engine->MsQuic->ConnectionStart(PrimaryConnection, AF_UNSPEC, Engine->ServerAddress, Engine->ServerPort);
+        Status = Engine->MsQuic->ConnectionStart(PrimaryConnection, Engine->ClientConfig, AF_UNSPEC, Engine->ServerAddress, Engine->ServerPort);
         if (QUIC_FAILED(Status)) {
             printf("Failed to start connection 0x%x\n", Status);
             return false;
@@ -462,20 +387,50 @@ Start(
         Engine->PrimaryConnection = PrimaryConnection;
     }
 
-    Engine->SecurityConfig =
-        GetSecConfigForFile(
-            Engine->MsQuic,
+    Settings.IsSetFlags = 0; // Reset from the client config
+
+    Settings.IdleTimeoutMs = IdleTimeoutMs;
+    Settings.IsSet.IdleTimeoutMs = true;
+    Settings.MaxBytesPerKey = MaxBytesPerKey;
+    Settings.IsSet.MaxBytesPerKey = true;
+    Settings.KeepAliveIntervalMs = KeepAliveMs;
+    Settings.IsSet.KeepAliveIntervalMs = true;
+    Settings.DatagramReceiveEnabled = true;
+    Settings.IsSet.DatagramReceiveEnabled = true;
+    Settings.ServerResumptionLevel = QUIC_SERVER_RESUME_AND_ZERORTT;
+    Settings.IsSet.ServerResumptionLevel = true;
+    Settings.PeerBidiStreamCount = 1;
+    Settings.IsSet.PeerBidiStreamCount = true;
+
+    QUIC_CERTIFICATE_FILE CertFile = {"key.pem", "cert.pem"};
+    memset(&CredConfig, 0, sizeof(CredConfig));
+    CredConfig.CertificateFile = &CertFile;
+    CredConfig.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
+    CredConfig.Flags = QUIC_CREDENTIAL_FLAG_NONE;
+
+    Status =
+        Engine->MsQuic->ConfigurationOpen(
             Engine->Registration,
-            "key.pem",
-            "cert.pem");
-    if (Engine->SecurityConfig == nullptr) {
-        printf("Failed to generate security config!\n");
+            &Alpn,
+            1,
+            &Settings,
+            sizeof(Settings),
+            nullptr,
+            &Engine->SecurityConfig);
+    if (QUIC_FAILED(Status)) {
+        printf("Failed to open security config, 0x%x!\n", Status);
+        return false;
+    }
+
+    Status = Engine->MsQuic->ConfigurationLoadCredential(Engine->SecurityConfig, &CredConfig);
+    if (QUIC_FAILED(Status)) {
+        printf("Failed to load credential, 0x%x!\n", Status);
         return false;
     }
 
     Status =
         Engine->MsQuic->ListenerOpen(
-            Engine->Session,
+            Engine->Registration,
             QuicLanEngine::ServerListenerCallback,
             Engine,
             &Engine->Listener);
@@ -490,6 +445,8 @@ Start(
     Status =
         Engine->MsQuic->ListenerStart(
             Engine->Listener,
+            &Alpn,
+            1,
             &ListenAddress); // TODO: Exclude VPN interface somehow?
 
     return true;
