@@ -5,11 +5,12 @@
 
 typedef struct QuicLanEngine QuicLanEngine;
 
+typedef QUIC_BUFFER QuicLanPacket;
+
 enum QuicLanTunnelEventType {
     InvalidTunnelEvent,
     TunnelIpAddressReady,
     TunnelPacketReceived,
-    TunnelSendComplete,
     TunnelDisconnected
 };
 
@@ -24,16 +25,11 @@ struct TunnelPacketReceivedEvent {
     uint16_t PacketLength;
 };
 
-struct TunnelSendCompleteEvent {
-    uint8_t * Packet;
-};
-
 struct QuicLanTunnelEvent {
     QuicLanTunnelEventType Type;
     union {
         TunnelIpAddressReadyEvent   IpAddressReady;
         TunnelPacketReceivedEvent   PacketReceived;
-        TunnelSendCompleteEvent     SendComplete;
     };
 };
 
@@ -57,11 +53,14 @@ bool
 Start(
     _In_ QuicLanEngine* Engine);
 
+QuicLanPacket*
+RequestPacket(
+    _In_ QuicLanEngine* Engine);
+
 bool
 Send(
     _In_ QuicLanEngine* Engine,
-    _In_ const uint8_t* Packet,
-    _In_ uint16_t PacketLength);
+    _In_ QuicLanPacket* Packet);
 
 bool
 Stop(

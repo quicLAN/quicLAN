@@ -50,17 +50,9 @@ AddServer(
 bool
 Send(
     _In_ QuicLanEngine* Engine,
-    _In_ const uint8_t* Packet,
-    _In_ uint16_t PacketLength)
+    _In_ QuicLanPacket* Packet)
 {
-    // TODO: Don't allow the app to send unrestricted, apply back pressure from QUIC.
-    // Consider forcing the app to request a buffer from us in a lookaside list
-    // which allows us to apply back pressure.
-    QUIC_BUFFER* Buffer = new QUIC_BUFFER;
-    Buffer->Buffer = (uint8_t*) Packet;
-    Buffer->Length = PacketLength;
-
-    return Engine->Send(Buffer);
+    return Engine->Send(Packet);
 }
 
 bool

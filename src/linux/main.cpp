@@ -60,10 +60,18 @@ int tun_alloc(char *dev)
 void
 TunnelReadThread() {
     while (true) {
-        uint16_t PacketLength = TunnelMtu;
-        uint8_t* Packet = new uint8_t[PacketLength];
-        int bytes = read(TunnelFile, Packet, PacketLength);
-        if (!Send(Engine, Packet, bytes)) {
+        QuicLanPacket* Packet = RequestPacket(Engine);
+        int bytes = read(TunnelFile, Packet->Buffer, Packet->Length);
+        if (bytes == -1) {
+            printf("Error reading from tunnel: %d!\n", errno);
+            continue;
+        } else if (bytes == 0) {
+            printf("Tunnel closed!\n");
+            break;
+        } else {
+            Packet->Length = (uint32_t)bytes;
+        }
+        if (!Send(Engine, Packet)) {
             printf("Failed to send data!\n");
         }
     }
@@ -129,10 +137,6 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
         case TunnelPacketReceived:
             printf("Packet received\n");
             write(TunnelFile, Event->PacketReceived.Packet, Event->PacketReceived.PacketLength);
-            break;
-        case TunnelSendComplete:
-            printf("Send completed!\n");
-            delete[] Event->SendComplete.Packet;
             break;
         case TunnelDisconnected:
             printf("Tunnel Disconnected!\n");

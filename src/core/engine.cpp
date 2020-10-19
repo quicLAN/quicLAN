@@ -25,6 +25,7 @@ const uint8_t DatagramsEnabled = TRUE;
 const uint32_t KeepAliveMs = 5000;
 const uint16_t BiDiStreamCount = 1;
 
+const uint32_t MaxDatagramsOutstanding = 50;
 
 bool
 QuicLanEngine::Initialize(
@@ -228,9 +229,41 @@ QuicLanEngine::StartServer()
     return QUIC_SUCCEEDED(Status);
 }
 
+void
+QuicLanEngine::IncrementOutstandingDatagrams()
+{
+    std::lock_guard DOLock(DatagramsOutstandingLock);
+    DatagramsOutstanding++;
+}
+
+void
+QuicLanEngine::DecrementOutstandingDatagrams()
+{
+    std::unique_lock Lock(DatagramsOutstandingLock);
+    DatagramsOutstanding--;
+    Lock.unlock();
+    DatagramsOutstandingCv.notify_one();
+}
+
+QuicLanPacket*
+QuicLanEngine::GetPacket()
+{
+    std::unique_lock Lock(DatagramsOutstandingLock);
+    while (DatagramsOutstanding >= MaxDatagramsOutstanding) {
+        DatagramsOutstandingCv.wait(Lock);
+    }
+    Lock.unlock(); // We don't need the lock anymore.
+
+    uint8_t* RawBuffer = new uint8_t[sizeof(QUIC_BUFFER) + MaxDatagramLength];
+    QUIC_BUFFER* Buffer = (QUIC_BUFFER*)RawBuffer;
+    Buffer->Buffer = RawBuffer + sizeof(QUIC_BUFFER);
+    Buffer->Length = MaxDatagramLength;
+    return Buffer;
+}
+
 bool
 QuicLanEngine::Send(
-    _In_ QUIC_BUFFER* SendBuffer)
+    _In_ QuicLanPacket* SendBuffer)
 {
     QuicLanPeerContext* FoundPeer = nullptr;
     {
@@ -274,12 +307,12 @@ QuicLanEngine::Send(
         if (QUIC_FAILED(Status)) {
             goto Error;
         } else {
+            IncrementOutstandingDatagrams();
             return true;
         }
     } else {
 Error:
         delete SendBuffer;
-        // TODO: this leaks the app's memory
         return false;
     }
 }
@@ -349,7 +382,7 @@ QuicLanEngine::ClientConnectionCallback(
     _In_opt_ void* Context,
     _Inout_ QUIC_CONNECTION_EVENT* Event)
 {
-    auto This = (QuicLanEngine*)Context;
+    auto This = (QuicLanPeerContext*)Context;
 
     QuicLanTunnelEvent TunnelEvent{};
 
@@ -369,7 +402,7 @@ QuicLanEngine::ClientConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
-        This->MsQuic->ConnectionClose(Connection);
+        This->Engine->MsQuic->ConnectionClose(Connection);
         break;
     case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
         // TODO: Open stream for authentication and control path
@@ -380,30 +413,29 @@ QuicLanEngine::ClientConnectionCallback(
         TunnelEvent.Type = TunnelPacketReceived;
         TunnelEvent.PacketReceived.Packet = Event->DATAGRAM_RECEIVED.Buffer->Buffer;
         TunnelEvent.PacketReceived.PacketLength = Event->DATAGRAM_RECEIVED.Buffer->Length;
-        This->EventHandler(&TunnelEvent); // TODO: Move this to a thread to not block QUIC.
+        This->Engine->EventHandler(&TunnelEvent); // TODO: Move this to a thread to not block QUIC.
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
         if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
-            This->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+            This->Engine->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
 
             // TODO: this is a hack just for development. Eventually, this will
             // pick an unused IP address based on the info from the control stream.
             TunnelEvent.Type = TunnelIpAddressReady;
-            TunnelEvent.IpAddressReady.Mtu = This->MaxDatagramLength;
+            TunnelEvent.IpAddressReady.Mtu = This->Engine->MaxDatagramLength;
             // Client
             TunnelEvent.IpAddressReady.IPv4Addr = "169.254.10.2";
             TunnelEvent.IpAddressReady.IPv6Addr = "[fd71:7569:636c:616e::2]";
-            This->EventHandler(&TunnelEvent);
+            This->Engine->EventHandler(&TunnelEvent);
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
         if (Event->DATAGRAM_SEND_STATE_CHANGED.State == QUIC_DATAGRAM_SEND_SENT) {
-            TunnelEvent.Type = TunnelSendComplete;
-            QUIC_BUFFER* Buffer = (QUIC_BUFFER*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
-            TunnelEvent.SendComplete.Packet = Buffer->Buffer;
-            This->EventHandler(&TunnelEvent);
+            This->Engine->DecrementOutstandingDatagrams();
+            uint8_t* Buffer = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
             Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
-            delete Buffer;
+
+            delete [] Buffer; // TODO: Add buffer to a lookaside list
         }
         break;
     default:
@@ -477,13 +509,10 @@ QuicLanEngine::ServerConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
         if (Event->DATAGRAM_SEND_STATE_CHANGED.State == QUIC_DATAGRAM_SEND_SENT) {
-            // TODO: Don't send event for forwarded datagrams.
-            TunnelEvent.Type = TunnelSendComplete;
-            QUIC_BUFFER* Buffer = (QUIC_BUFFER*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
-            TunnelEvent.SendComplete.Packet = Buffer->Buffer;
-            This->Engine->EventHandler(&TunnelEvent);
+            This->Engine->DecrementOutstandingDatagrams();
+            uint8_t* Buffer = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
             Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
-            delete Buffer;
+            delete [] Buffer;
         }
         break;
     default:

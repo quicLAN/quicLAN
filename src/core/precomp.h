@@ -15,6 +15,7 @@
 #undef max
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <string.h>
 
 #include "engine.h"

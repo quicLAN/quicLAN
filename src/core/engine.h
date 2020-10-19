@@ -35,9 +35,18 @@ struct QuicLanEngine {
 
     bool AddPeer(QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); return true; }
 
+    void
+    IncrementOutstandingDatagrams();
+
+    void
+    DecrementOutstandingDatagrams();
+
+    QuicLanPacket*
+    GetPacket();
+
     bool
     Send(
-        _In_ QUIC_BUFFER* SendBuffer);
+        _In_ QuicLanPacket* SendBuffer);
 
     bool
     Stop();
@@ -104,7 +113,11 @@ struct QuicLanEngine {
     std::mutex PeersLock;
     std::vector<QuicLanPeerContext*> Peers;
 
-    uint16_t MaxDatagramLength = 1000; // TODO: calculate this as the min() of all connections' MTUs.
+    std::mutex DatagramsOutstandingLock;
+    std::condition_variable DatagramsOutstandingCv;
+    uint16_t DatagramsOutstanding = 0;
+
+    uint16_t MaxDatagramLength = 1400; // TODO: calculate this as the min() of all connections' MTUs.
 
     bool ShuttingDown = false;
 };
