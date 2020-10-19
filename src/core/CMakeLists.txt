@@ -1,5 +1,6 @@
 set(SOURCES
-    quiclan.cpp
+    api.cpp
+    engine.cpp
 )
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${QUICLAN_C_FLAGS}")

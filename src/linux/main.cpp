@@ -21,7 +21,7 @@
 
 
 #include <../../submodules/msquic/src/inc/quic_sal_stub.h>
-#include <../core/quiclan.h>
+#include <quiclan.h>
 
 QuicLanEngine *Engine;
 int TunnelFile;

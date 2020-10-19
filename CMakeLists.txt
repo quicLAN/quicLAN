@@ -16,7 +16,7 @@ else()
 endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/src/inc)
-include_directories(${CMAKE_SOURCE_DIR}/src/core)
+include_directories(${CMAKE_SOURCE_DIR}/src/inc)
 
 set(QUIC_TLS "openssl")
 set(QUIC_BUILD_TOOLS CACHE BOOL OFF)
