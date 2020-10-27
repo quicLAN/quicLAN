@@ -7,6 +7,8 @@ typedef struct QuicLanEngine QuicLanEngine;
 
 typedef QUIC_BUFFER QuicLanPacket;
 
+const uint16_t DEFAULT_QUICLAN_SERVER_PORT = 7490;
+
 enum QuicLanTunnelEventType {
     InvalidTunnelEvent,
     TunnelIpAddressReady,
@@ -51,7 +53,8 @@ AddServer(
 
 bool
 Start(
-    _In_ QuicLanEngine* Engine);
+    _In_ QuicLanEngine* Engine,
+    _In_ uint16_t ListenerPort);
 
 QuicLanPacket*
 RequestPacket(

@@ -122,6 +122,9 @@ QuicLanEngine::StartClient()
 
     Peer = new QuicLanPeerContext;
     Peer->Engine = this;
+    // TODO: Hacks for development. Remove when implementing address announcements
+    inet_aton("169.254.10.1", &Peer->InternalAddress4.Ipv4.sin_addr);
+    inet_pton(AF_INET6, "[fd71:7569:636c:616e::1]", &Peer->InternalAddress6.Ipv6.sin6_addr);
     Status =
         MsQuic->ConnectionOpen(
             Registration,
@@ -156,7 +159,8 @@ Error:
 }
 
 bool
-QuicLanEngine::StartServer()
+QuicLanEngine::StartServer(
+    _In_ uint16_t ListenerPort)
 {
     QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
     QUIC_SETTINGS Settings{};
@@ -215,13 +219,13 @@ QuicLanEngine::StartServer()
 
     QUIC_ADDR ListenAddress;
     QuicAddrSetFamily(&ListenAddress, AF_UNSPEC);
-    QuicAddrSetPort(&ListenAddress, UdpPort);
+    QuicAddrSetPort(&ListenAddress, ListenerPort);
     Status =
         MsQuic->ListenerStart(
             Listener,
             &Alpn,
             1,
-            &ListenAddress); // TODO: Exclude VPN interface somehow?
+            &ListenAddress);
     if (QUIC_FAILED(Status)) {
         printf("Failed to start listener, 0x%x\n", Status);
     }
@@ -305,12 +309,14 @@ QuicLanEngine::Send(
                 SendBuffer);
         FoundPeer->Lock.unlock();
         if (QUIC_FAILED(Status)) {
+            printf("DatagramSend failed!\n");
             goto Error;
         } else {
             IncrementOutstandingDatagrams();
             return true;
         }
     } else {
+        printf("Failed to find peer!\n");
 Error:
         delete SendBuffer;
         return false;
@@ -349,7 +355,12 @@ QuicLanEngine::ServerListenerCallback(
 
     switch (Event->Type) {
     case QUIC_LISTENER_EVENT_NEW_CONNECTION: {
-        // TODO if (Event->NEW_CONNECTION->Info.LocalAddress == VPN tunnel address), drop
+        // Reject connections to the VPN address. This isn't Inception.
+        if ((Event->NEW_CONNECTION.Info->LocalAddress->Ip.sa_family == 4 && memcmp(&Event->NEW_CONNECTION.Info->LocalAddress->Ipv4.sin_addr, &This->Ip4VpnAddress.Ipv4.sin_addr, sizeof(This->Ip4VpnAddress.Ipv4.sin_addr)) == 0) ||
+            (Event->NEW_CONNECTION.Info->LocalAddress->Ip.sa_family == 6 && memcmp(&Event->NEW_CONNECTION.Info->LocalAddress->Ipv6.sin6_addr, &This->Ip6VpnAddress.Ipv6.sin6_addr, sizeof(This->Ip6VpnAddress.Ipv6.sin6_addr))))
+        {
+            return QUIC_STATUS_CONNECTION_REFUSED;
+        }
         QUIC_STATUS Status = This->MsQuic->ConnectionSetConfiguration(Event->NEW_CONNECTION.Connection, This->ServerConfig);
         if (QUIC_FAILED(Status)) {
             printf("Server failed to set config on client connection, 0x%x!\n", Status);
@@ -363,8 +374,8 @@ QuicLanEngine::ServerListenerCallback(
         if (This->AddPeer(PeerContext)) {
             This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, PeerContext);
         } else {
-            This->MsQuic->ConnectionClose(Event->NEW_CONNECTION.Connection);
             delete PeerContext;
+            return QUIC_STATUS_CONNECTION_REFUSED;
         }
         break;
     }
@@ -402,7 +413,7 @@ QuicLanEngine::ClientConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
-        This->Engine->MsQuic->ConnectionClose(Connection);
+        // This->Engine->MsQuic->ConnectionClose(Connection);
         break;
     case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
         // TODO: Open stream for authentication and control path
@@ -459,6 +470,9 @@ QuicLanEngine::ServerConnectionCallback(
     case QUIC_CONNECTION_EVENT_CONNECTED:
         printf("[conn][%p] Connected\n", Connection);
         This->Engine->MsQuic->ConnectionSendResumptionTicket(Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
+        // TODO: Hack for development. Remove when adding address announcements.
+        inet_aton("169.254.10.2", &This->InternalAddress4.Ipv4.sin_addr);
+        inet_pton(AF_INET6, "[fd71:7569:636c:616e::2]", &This->InternalAddress6.Ipv6.sin6_addr);
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         if (Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status != QUIC_STATUS_CONNECTION_IDLE) {
@@ -474,7 +488,7 @@ QuicLanEngine::ServerConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
-        This->Engine->MsQuic->ConnectionClose(Connection);
+        // This->Engine->MsQuic->ConnectionClose(Connection);
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         // TODO: Authenticate client

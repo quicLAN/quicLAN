@@ -1,4 +1,8 @@
 
+/*
+    Licensed under the MIT License.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -20,7 +24,8 @@
 #include <thread>
 
 
-#include <../../submodules/msquic/src/inc/quic_sal_stub.h>
+#include <quic_sal_stub.h>
+#include <msquichelper.h>
 #include <quiclan.h>
 
 QuicLanEngine *Engine;
@@ -158,7 +163,7 @@ int main(int argc, char** argv)
     if (strcmp(argv[1], "-c") == 0 && argc >= 3) {
         const char* ServerAddress = argv[2];
         printf("Server address: %s\n", ServerAddress);
-        if (!AddServer(Engine, ServerAddress, 7490)) {
+        if (!AddServer(Engine, ServerAddress, DEFAULT_QUICLAN_SERVER_PORT)) {
             printf("Failed to add server\n");
             return -1;
         }
@@ -176,7 +181,7 @@ int main(int argc, char** argv)
         return -1;
     }
     // TODO: drop root privileges and use the tunnel.
-    if(!Start(Engine)) {
+    if(!Start(Engine, DEFAULT_QUICLAN_SERVER_PORT)) {
         printf("Failed to start quiclan!\n");
         return -1;
     }

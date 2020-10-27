@@ -31,7 +31,8 @@ struct QuicLanEngine {
     StartClient();
 
     bool
-    StartServer();
+    StartServer(
+        _In_ uint16_t ListenerPort);
 
     bool AddPeer(QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); return true; }
 
@@ -103,13 +104,16 @@ struct QuicLanEngine {
     HQUIC Registration;
     HQUIC ServerConfig;
     HQUIC ClientConfig;
+    HQUIC Listener;
 
     FN_TUNNEL_EVENT_CALLBACK EventHandler;
 
     char ServerAddress[255];
     uint16_t ServerPort;
 
-    HQUIC Listener;
+    QUIC_ADDR Ip4VpnAddress;
+    QUIC_ADDR Ip6VpnAddress;
+
     std::mutex PeersLock;
     std::vector<QuicLanPeerContext*> Peers;
 
