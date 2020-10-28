@@ -13,5 +13,6 @@ quicLAN aims to enable secure peer-to-peer VPN over the internet using the lates
 At this time, quicLAN is not accepting external code contributions. However, interested parties are welcome to open issues.
 
 ## Disclaimers
-quicLAN is a project in active development, and as such, no guarantees are made as to whether it is suitable for any particular use, nor whether it meets industry standards, or even acheives project goals.
+quicLAN is a project in active development, and as such, makes no guarantees as to whether it is suitable for any particular use, nor whether it meets industry standards, or even acheives project goals.
+
 quicLAN is not sponsored, endorsed, or developed for/by Microsoft, but does use Microsoft's MsQuic library.
