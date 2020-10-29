@@ -10,7 +10,7 @@ quicLAN aims to enable secure peer-to-peer VPN over the internet using the lates
 - quicLAN will be fast, using [MsQuic](https://github.com/Microsoft/msquic) for the underlying QUIC implementation.
 
 ## Contributing
-At this time, quicLAN is not accepting external code contributions. However, interested parties are welcome to open issues.
+quicLAN won't be accepting external code contributions until the Alpha milestone is complete. However, interested parties are welcome to open issues in the meantime.
 
 ## Disclaimers
 quicLAN is a project in active development, and as such, makes no guarantees as to whether it is suitable for any particular use, nor whether it meets industry standards, or even acheives project goals.
