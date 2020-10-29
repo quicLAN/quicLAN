@@ -11,14 +11,18 @@ const uint16_t DEFAULT_QUICLAN_SERVER_PORT = 7490;
 
 enum QuicLanTunnelEventType {
     InvalidTunnelEvent,
-    TunnelIpAddressReady,
-    TunnelPacketReceived,
-    TunnelDisconnected
+    TunnelIpAddressReady,   // Indicates the IP addresses to use in the tunnel.
+    TunnelMtuChanged,       // Indicates the MTU of the tunnel.
+    TunnelPacketReceived,   // Indicates a packet arrived destined for the tunnel.
+    TunnelDisconnected      // Indicates the last connection has closed.
 };
 
 struct TunnelIpAddressReadyEvent {
     const char* IPv4Addr;
     const char* IPv6Addr;
+};
+
+struct TunnelMtuChangedEvent {
     uint16_t Mtu;
 };
 
@@ -31,6 +35,7 @@ struct QuicLanTunnelEvent {
     QuicLanTunnelEventType Type;
     union {
         TunnelIpAddressReadyEvent   IpAddressReady;
+        TunnelMtuChangedEvent       MtuChanged;
         TunnelPacketReceivedEvent   PacketReceived;
     };
 };

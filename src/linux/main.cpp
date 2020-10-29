@@ -93,7 +93,6 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
                 return;
             }
 
-            TunnelMtu = Event->IpAddressReady.Mtu;
             // Start tunnel read thread
             std::thread(TunnelReadThread).detach();
 
@@ -105,20 +104,6 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
             memcpy(&ifr.ifr_addr, &sin, sizeof(ifr.ifr_addr));
             if (ioctl(sock, SIOCSIFADDR, &ifr) < 0) {
                 err(errno, "ioctl to set ip address failed\n");
-                close(sock);
-                return;
-            }
-
-            /* Set MTU */
-            if(ioctl(sock, SIOCGIFMTU, &ifr)) {
-                err(errno, "ioctl to get MTU failed\n");
-                close(sock);
-                return;
-            }
-            printf("Setting MTU to %u\n", Event->IpAddressReady.Mtu);
-            ifr.ifr_mtu = TunnelMtu;
-            if(ioctl(sock, SIOCSIFMTU, &ifr)) {
-                err(errno, "ioctl to change MTU failed\n");
                 close(sock);
                 return;
             }
@@ -137,8 +122,34 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
             }
 
             close(sock);
-            }
             break;
+            }
+        case TunnelMtuChanged: {
+            struct ifreq ifr;
+            strncpy(ifr.ifr_name, TunnelName, IFNAMSIZ); // TODO: use the actually allocated name
+            int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+            if(sock == -1){
+                err(errno, "Could not get socket.\n");
+                return;
+            }
+
+            /* Set MTU */
+            if(ioctl(sock, SIOCGIFMTU, &ifr)) {
+                err(errno, "ioctl to get MTU failed\n");
+                close(sock);
+                return;
+            }
+            printf("Setting MTU to %u\n", Event->MtuChanged.Mtu);
+            ifr.ifr_mtu = TunnelMtu = Event->MtuChanged.Mtu;
+            if(ioctl(sock, SIOCSIFMTU, &ifr)) {
+                err(errno, "ioctl to change MTU failed\n");
+                close(sock);
+                return;
+            }
+
+            close(sock);
+            break;
+            }
         case TunnelPacketReceived:
             printf("Packet received\n");
             write(TunnelFile, Event->PacketReceived.Packet, Event->PacketReceived.PacketLength);

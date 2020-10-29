@@ -18,7 +18,8 @@ struct QuicLanPeerContext {
         uint32_t TimedOut : 1;
         uint32_t Disconnected : 1;
     } State;
-    uint32_t ServerInitiated : 1;
+    uint32_t Server : 1;
+    uint16_t Mtu;
 };
 
 struct QuicLanEngine {
@@ -121,7 +122,7 @@ struct QuicLanEngine {
     std::condition_variable DatagramsOutstandingCv;
     uint16_t DatagramsOutstanding = 0;
 
-    uint16_t MaxDatagramLength = 1400; // TODO: calculate this as the min() of all connections' MTUs.
+    uint16_t MaxDatagramLength = 1500; // TODO: calculate this as the min() of all connections' MTUs.
 
     bool ShuttingDown = false;
 };

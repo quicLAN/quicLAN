@@ -123,7 +123,7 @@ QuicLanEngine::StartClient()
     Peer = new QuicLanPeerContext;
     Peer->Engine = this;
     // TODO: Hacks for development. Remove when implementing address announcements
-    inet_aton("169.254.10.1", &Peer->InternalAddress4.Ipv4.sin_addr);
+    inet_aton("169.254.0.1", &Peer->InternalAddress4.Ipv4.sin_addr);
     inet_pton(AF_INET6, "[fd71:7569:636c:616e::1]", &Peer->InternalAddress6.Ipv6.sin6_addr);
     Status =
         MsQuic->ConnectionOpen(
@@ -228,6 +228,17 @@ QuicLanEngine::StartServer(
             &ListenAddress);
     if (QUIC_FAILED(Status)) {
         printf("Failed to start listener, 0x%x\n", Status);
+    }
+
+    if (strnlen(ServerAddress, sizeof(ServerAddress)) == 0) {
+        // This is a server-only instance, so assign the first IP address.
+        QuicLanTunnelEvent TunnelEvent{};
+        TunnelEvent.Type = TunnelIpAddressReady;
+        TunnelEvent.IpAddressReady.IPv4Addr = "169.254.0.1";
+        TunnelEvent.IpAddressReady.IPv6Addr  = "[fd71:7569:636c:616e::1]";
+        EventHandler(&TunnelEvent);
+        inet_pton(AF_INET, TunnelEvent.IpAddressReady.IPv4Addr, &Ip4VpnAddress.Ipv4.sin_addr);
+        inet_pton(AF_INET6, TunnelEvent.IpAddressReady.IPv6Addr, &Ip6VpnAddress.Ipv6.sin6_addr);
     }
 
     return QUIC_SUCCEEDED(Status);
@@ -369,7 +380,7 @@ QuicLanEngine::ServerListenerCallback(
         QuicLanPeerContext* PeerContext = new QuicLanPeerContext;
         PeerContext->ExternalAddress = *Event->NEW_CONNECTION.Info->RemoteAddress;
         PeerContext->Connection = Event->NEW_CONNECTION.Connection;
-        PeerContext->ServerInitiated = true;
+        PeerContext->Server = true;
         PeerContext->Engine = This;
         if (This->AddPeer(PeerContext)) {
             This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, PeerContext);
@@ -428,16 +439,22 @@ QuicLanEngine::ClientConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
         if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
-            This->Engine->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+            This->Mtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
 
             // TODO: this is a hack just for development. Eventually, this will
             // pick an unused IP address based on the info from the control stream.
             TunnelEvent.Type = TunnelIpAddressReady;
-            TunnelEvent.IpAddressReady.Mtu = This->Engine->MaxDatagramLength;
             // Client
             TunnelEvent.IpAddressReady.IPv4Addr = "169.254.10.2";
             TunnelEvent.IpAddressReady.IPv6Addr = "[fd71:7569:636c:616e::2]";
             This->Engine->EventHandler(&TunnelEvent);
+
+            if (This->Mtu < This->Engine->MaxDatagramLength) {
+                This->Engine->MaxDatagramLength = This->Mtu;
+                TunnelEvent.Type = TunnelMtuChanged;
+                TunnelEvent.MtuChanged.Mtu = This->Mtu;
+                This->Engine->EventHandler(&TunnelEvent);
+            }
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
@@ -509,16 +526,14 @@ QuicLanEngine::ServerConnectionCallback(
 
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
         if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
-            This->Engine->MaxDatagramLength = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
-
-            // TODO: this is a hack just for development. Eventually, this will
-            // pick an unused IP address based on the info from the control stream.
-            TunnelEvent.Type = TunnelIpAddressReady;
-            TunnelEvent.IpAddressReady.Mtu = This->Engine->MaxDatagramLength;
-            // Server
-            TunnelEvent.IpAddressReady.IPv4Addr = "169.254.10.1";
-            TunnelEvent.IpAddressReady.IPv6Addr  = "[fd71:7569:636c:616e::1]";
-            This->Engine->EventHandler(&TunnelEvent);
+            This->Mtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
+            if (This->Mtu < This->Engine->MaxDatagramLength) {
+                This->Engine->MaxDatagramLength = This->Mtu;
+                // Inform the VPN that the MTU has changed.
+                TunnelEvent.Type = TunnelMtuChanged;
+                TunnelEvent.MtuChanged.Mtu = This->Mtu;
+                This->Engine->EventHandler(&TunnelEvent);
+            }
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:

@@ -41,18 +41,20 @@ BasicConnectionListener1(QuicLanTunnelEvent* Event)
         std::unique_lock lk(Engine1Mutex);
         Engine1v4Address = Event->IpAddressReady.IPv4Addr;
         Engine1v6Address = Event->IpAddressReady.IPv6Addr;
-        Engine1Mtu = Event->IpAddressReady.Mtu;
         lk.unlock();
         Engine1Cv.notify_all();
         break;
     }
+    case TunnelMtuChanged:
+        Engine1Mtu = Event->MtuChanged.Mtu;
+        break;
     case TunnelPacketReceived: {
         std::unique_lock lk(Engine1Mutex);
         Engine1ReceivedData = true;
         lk.unlock();
         Engine1Cv.notify_all();
-    }
         break;
+    }
     default:
         break;
     }
@@ -66,11 +68,13 @@ BasicConnectionListener2(QuicLanTunnelEvent* Event)
         std::unique_lock lk(Engine2Mutex);
         Engine2v4Address = Event->IpAddressReady.IPv4Addr;
         Engine2v6Address = Event->IpAddressReady.IPv6Addr;
-        Engine2Mtu = Event->IpAddressReady.Mtu;
         lk.unlock();
         Engine2Cv.notify_all();
         break;
     }
+    case TunnelMtuChanged:
+        Engine2Mtu = Event->MtuChanged.Mtu;
+        break;
     case TunnelPacketReceived: {
         std::unique_lock lk(Engine2Mutex);
         Engine2ReceivedData = true;
@@ -143,11 +147,13 @@ TestBasicConnection()
         // Wait for Engine1 to get an IP address
         std::unique_lock lk(Engine1Mutex);
         Engine1Cv.wait(lk, []{return Engine1v4Address.length() > 0;});
+        printf("Engine1 IP4 Address %s\n", Engine1v4Address.c_str());
     }
     {
         // Wait for Engine2 to get an IP address
         std::unique_lock lk(Engine2Mutex);
         Engine2Cv.wait(lk, []{return Engine2v4Address.length() > 0;});
+        printf("Engine2 IP4 address %s\n", Engine2v4Address.c_str());
     }
 
     // Populate packets with valid IPv4 header matching destination IP address
