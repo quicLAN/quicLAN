@@ -166,7 +166,7 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
 int main(int argc, char** argv)
 {
     int junk;
-    if (!InitializeQuicLanEngine(TunnelEventCallback, &Engine)) {
+    if (!InitializeQuicLanEngine("ToDo:GetFromCommandline", TunnelEventCallback, &Engine)) {
         printf("Failed to initialize QuicLanEngine!\n");
         return -1;
     }

@@ -47,6 +47,7 @@ void
 
 bool
 InitializeQuicLanEngine(
+    _In_z_ const char* Password,
     _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
     _Out_ QuicLanEngine** Engine);
 

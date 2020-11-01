@@ -5,6 +5,7 @@
 
 bool
 InitializeQuicLanEngine(
+    _In_z_ const char* Password,
     _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
     _Out_ QuicLanEngine** Engine)
 {
@@ -14,7 +15,7 @@ InitializeQuicLanEngine(
     *Engine = nullptr;
 
     QuicLanEngine* NewEngine = new QuicLanEngine;
-    if (!NewEngine->Initialize(EventHandler)) {
+    if (!NewEngine->Initialize(Password, EventHandler)) {
         delete NewEngine;
         return false;
     }

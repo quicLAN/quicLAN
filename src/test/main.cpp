@@ -18,6 +18,8 @@
 #include <condition_variable>
 #include <stdio.h>
 
+const char* TestPassword = "TestPassword";
+
 std::string Engine1v4Address;
 std::string Engine1v6Address;
 std::string Engine2v4Address;
@@ -110,13 +112,13 @@ TestBasicConnection()
     QuicLanPacket* Engine1Packet = nullptr;
     QuicLanPacket* Engine2Packet = nullptr;
 
-    if (!InitializeQuicLanEngine(BasicConnectionListener1, &Engine1)) {
+    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener1, &Engine1)) {
         Result = false;
         printf("Failed initializing Engine1\n");
         goto Cleanup;
     }
 
-    if (!InitializeQuicLanEngine(BasicConnectionListener2, &Engine2)) {
+    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener2, &Engine2)) {
         Result = false;
         printf("Failed initializing Engine2\n");
         goto Cleanup;
@@ -140,9 +142,6 @@ TestBasicConnection()
         goto Cleanup;
     }
 
-    Engine1Packet = RequestPacket(Engine1);
-    Engine2Packet = RequestPacket(Engine2);
-
     {
         // Wait for Engine1 to get an IP address
         std::unique_lock lk(Engine1Mutex);
@@ -155,6 +154,9 @@ TestBasicConnection()
         Engine2Cv.wait(lk, []{return Engine2v4Address.length() > 0;});
         printf("Engine2 IP4 address %s\n", Engine2v4Address.c_str());
     }
+
+    Engine1Packet = RequestPacket(Engine1);
+    Engine2Packet = RequestPacket(Engine2);
 
     // Populate packets with valid IPv4 header matching destination IP address
     PopulateHeader(
@@ -171,12 +173,12 @@ TestBasicConnection()
 
     if (!Send(Engine1, Engine1Packet)) {
         Result = false;
-        printf("Failed sending Engine1\n");
+        printf("Failed sending Engine1! Engine1Mtu: %u\n",Engine1Mtu);
         goto Cleanup;
     }
     if (!Send(Engine2, Engine2Packet)) {
         Result = false;
-        printf("Failed sending Engine2\n");
+        printf("Failed sending Engine2! Engine2Mtu: %u\n", Engine2Mtu);
         goto Cleanup;
     }
 

@@ -2,6 +2,12 @@
     Licensed under the MIT License.
 */
 
+
+struct QuicLanAuthBlock{
+    uint8_t Len;
+    char Pw[255];
+};
+
 struct QuicLanPeerContext {
     QuicLanEngine* Engine;
     HQUIC Connection;
@@ -13,12 +19,16 @@ struct QuicLanPeerContext {
     struct {
         uint32_t AddressReserved : 1;
         uint32_t Connected : 1;
-        uint32_t StreamOpen : 1;
-        uint32_t StreamClosed : 1;
+        uint32_t Authenticating : 1;
+        uint32_t AuthenticationFailed : 1;
+        uint32_t Authenticated : 1;
+        uint32_t ControlStreamOpen : 1;
+        uint32_t ControlStreamClosed : 1;
         uint32_t TimedOut : 1;
         uint32_t Disconnected : 1;
     } State;
     uint32_t Server : 1;
+    uint32_t Inserted : 1;
     uint16_t Mtu;
 };
 
@@ -26,6 +36,7 @@ struct QuicLanEngine {
 
     bool
     Initialize(
+        _In_z_ const char* Password,
         _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler);
 
     bool
@@ -35,7 +46,13 @@ struct QuicLanEngine {
     StartServer(
         _In_ uint16_t ListenerPort);
 
-    bool AddPeer(QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); return true; }
+    void
+    ClientAuthenticationStart(
+        _In_ HQUIC AuthStream,
+        _In_ QuicLanPeerContext* PeerContext);
+
+    bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
+    bool RemovePeer(_In_ QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; auto it = Peers.begin(); while(*it != Peer) it++; if (it != Peers.end()) Peers.erase(it); Peer->Inserted = false; return true;}
 
     void
     IncrementOutstandingDatagrams();
@@ -77,10 +94,37 @@ struct QuicLanEngine {
     _Function_class_(QUIC_CONNECTION_CALLBACK)
     QUIC_STATUS
     QUIC_API
-    ServerConnectionCallback(
+    ServerUnauthenticatedConnectionCallback(
         _In_ HQUIC Connection,
         _In_opt_ void* Context,
         _Inout_ QUIC_CONNECTION_EVENT* Event);
+
+    static
+    _Function_class_(QUIC_CONNECTION_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ServerAuthenticatedConnectionCallback(
+        _In_ HQUIC Connection,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_CONNECTION_EVENT* Event);
+
+    static
+    _Function_class_(QUIC_STREAM_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ServerAuthStreamCallback(
+        _In_ HQUIC Stream,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_STREAM_EVENT* Event);
+
+    static
+    _Function_class_(QUIC_STREAM_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ClientAuthStreamCallback(
+        _In_ HQUIC Stream,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_STREAM_EVENT* Event);
 
     static
     _Function_class_(QUIC_STREAM_CALLBACK)
@@ -108,6 +152,8 @@ struct QuicLanEngine {
     HQUIC Listener;
 
     FN_TUNNEL_EVENT_CALLBACK EventHandler;
+
+    char Password[255];
 
     char ServerAddress[255];
     uint16_t ServerPort;
