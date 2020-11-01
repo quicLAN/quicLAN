@@ -680,10 +680,10 @@ QuicLanEngine::ServerAuthStreamCallback(
         } else {
             // Client-provided password matches! Send our password in response and allow client to open control stream.
             This->State.Authenticated = true;
-            QUIC_BUFFER* SendBuffer = (QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + Event->RECEIVE.Buffers[0].Length];
+            QUIC_BUFFER* SendBuffer = new QUIC_BUFFER;
             SendBuffer->Length = Event->RECEIVE.Buffers[0].Length;
-            SendBuffer->Buffer = (uint8_t*) (SendBuffer + 1);
-            memcpy(SendBuffer->Buffer, AuthBlock, Event->RECEIVE.Buffers[0].Length);
+            SendBuffer->Buffer = Event->RECEIVE.Buffers[0].Buffer;
+            Event->RECEIVE.TotalBufferLength = 0; // Tell MsQuic to not free the receive buffer yet.
             QUIC_SETTINGS Settings{};
             Settings.PeerBidiStreamCount = BiDiStreamCount;
             Settings.IsSet.PeerBidiStreamCount = true;
@@ -708,12 +708,13 @@ QuicLanEngine::ServerAuthStreamCallback(
                 TunnelEvent.MtuChanged.Mtu = This->Mtu;
                 This->Engine->EventHandler(&TunnelEvent);
             }
-            return QUIC_STATUS_PENDING;
+            return QUIC_STATUS_PENDING; // Tell MsQuic to not free the receive buffer yet.
         }
         break;
     }
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        delete [] (uint8_t*) Event->SEND_COMPLETE.ClientContext;
+        This->Engine->MsQuic->StreamReceiveComplete(Stream, ((QUIC_BUFFER*) Event->SEND_COMPLETE.ClientContext)->Length);
+        delete (QUIC_BUFFER*) Event->SEND_COMPLETE.ClientContext;
         break;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         This->Engine->MsQuic->StreamClose(Stream);
