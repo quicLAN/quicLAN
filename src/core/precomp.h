@@ -16,6 +16,8 @@
 #include <vector>
 #include <mutex>
 #include <condition_variable>
+#include <random>
 #include <string.h>
 
+#include "messages.h"
 #include "engine.h"

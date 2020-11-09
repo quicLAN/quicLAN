@@ -29,7 +29,10 @@ struct QuicLanPeerContext {
     } State;
     uint32_t Server : 1;
     uint32_t Inserted : 1;
+    uint32_t FirstConnection : 1;
+    QuicLanMessageType LastMessageSent;
     uint16_t Mtu;
+    uint16_t ID; // The low two bytes of the VPN IP address.
 };
 
 struct QuicLanEngine {
@@ -169,6 +172,8 @@ struct QuicLanEngine {
     uint16_t DatagramsOutstanding = 0;
 
     uint16_t MaxDatagramLength = 1500; // TODO: calculate this as the min() of all connections' MTUs.
+
+    uint16_t ID; // The low two bytes of the VPN IP address.
 
     bool ShuttingDown = false;
 };

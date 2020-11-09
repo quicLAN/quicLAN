@@ -20,41 +20,41 @@
 
 const char* TestPassword = "TestPassword";
 
-std::string Engine1v4Address;
-std::string Engine1v6Address;
-std::string Engine2v4Address;
-std::string Engine2v6Address;
-uint16_t Engine1Mtu = 0;
-uint16_t Engine2Mtu = 0;
-bool Engine1ReceivedData = false;
-bool Engine2ReceivedData = false;
+std::string ServerEnginev4Address;
+std::string ServerEnginev6Address;
+std::string ClientEnginev4Address;
+std::string ClientEnginev6Address;
+uint16_t ServerEngineMtu = 0;
+uint16_t ClientEngineMtu = 0;
+bool ServerEngineReceivedData = false;
+bool ClientEngineReceivedData = false;
 
-std::mutex Engine1Mutex;
-std::mutex Engine2Mutex;
+std::mutex ServerEngineMutex;
+std::mutex ClientEngineMutex;
 
-std::condition_variable Engine1Cv;
-std::condition_variable Engine2Cv;
+std::condition_variable ServerEngineCv;
+std::condition_variable ClientEngineCv;
 
 void
 BasicConnectionListener1(QuicLanTunnelEvent* Event)
 {
     switch (Event->Type) {
     case TunnelIpAddressReady: {
-        std::unique_lock lk(Engine1Mutex);
-        Engine1v4Address = Event->IpAddressReady.IPv4Addr;
-        Engine1v6Address = Event->IpAddressReady.IPv6Addr;
+        std::unique_lock lk(ServerEngineMutex);
+        ServerEnginev4Address = Event->IpAddressReady.IPv4Addr;
+        ServerEnginev6Address = Event->IpAddressReady.IPv6Addr;
         lk.unlock();
-        Engine1Cv.notify_all();
+        ServerEngineCv.notify_all();
         break;
     }
     case TunnelMtuChanged:
-        Engine1Mtu = Event->MtuChanged.Mtu;
+        ServerEngineMtu = Event->MtuChanged.Mtu;
         break;
     case TunnelPacketReceived: {
-        std::unique_lock lk(Engine1Mutex);
-        Engine1ReceivedData = true;
+        std::unique_lock lk(ServerEngineMutex);
+        ServerEngineReceivedData = true;
         lk.unlock();
-        Engine1Cv.notify_all();
+        ServerEngineCv.notify_all();
         break;
     }
     default:
@@ -67,21 +67,21 @@ BasicConnectionListener2(QuicLanTunnelEvent* Event)
 {
     switch (Event->Type) {
     case TunnelIpAddressReady: {
-        std::unique_lock lk(Engine2Mutex);
-        Engine2v4Address = Event->IpAddressReady.IPv4Addr;
-        Engine2v6Address = Event->IpAddressReady.IPv6Addr;
+        std::unique_lock lk(ClientEngineMutex);
+        ClientEnginev4Address = Event->IpAddressReady.IPv4Addr;
+        ClientEnginev6Address = Event->IpAddressReady.IPv6Addr;
         lk.unlock();
-        Engine2Cv.notify_all();
+        ClientEngineCv.notify_all();
         break;
     }
     case TunnelMtuChanged:
-        Engine2Mtu = Event->MtuChanged.Mtu;
+        ClientEngineMtu = Event->MtuChanged.Mtu;
         break;
     case TunnelPacketReceived: {
-        std::unique_lock lk(Engine2Mutex);
-        Engine2ReceivedData = true;
+        std::unique_lock lk(ClientEngineMutex);
+        ClientEngineReceivedData = true;
         lk.unlock();
-        Engine2Cv.notify_all();
+        ClientEngineCv.notify_all();
         break;
     }
     default:
@@ -107,109 +107,111 @@ bool
 TestBasicConnection()
 {
     bool Result = true;
-    QuicLanEngine* Engine1 = nullptr;
-    QuicLanEngine* Engine2 = nullptr;
-    QuicLanPacket* Engine1Packet = nullptr;
-    QuicLanPacket* Engine2Packet = nullptr;
+    QuicLanEngine* ServerEngine = nullptr;
+    QuicLanEngine* ClientEngine = nullptr;
+    QuicLanPacket* ServerEnginePacket = nullptr;
+    QuicLanPacket* ClientEnginePacket = nullptr;
 
-    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener1, &Engine1)) {
+    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener1, &ServerEngine)) {
         Result = false;
-        printf("Failed initializing Engine1\n");
+        printf("Failed initializing ServerEngine\n");
         goto Cleanup;
     }
 
-    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener2, &Engine2)) {
+    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener2, &ClientEngine)) {
         Result = false;
-        printf("Failed initializing Engine2\n");
+        printf("Failed initializing ClientEngine\n");
         goto Cleanup;
     }
 
-    if (!AddServer(Engine2, "127.0.0.1", DEFAULT_QUICLAN_SERVER_PORT)) {
+    if (!AddServer(ClientEngine, "127.0.0.1", DEFAULT_QUICLAN_SERVER_PORT)) {
         Result = false;
-        printf("Failed adding server to Engine2\n");
+        printf("Failed adding server to ClientEngine\n");
         goto Cleanup;
     }
 
-    if (!Start(Engine1, DEFAULT_QUICLAN_SERVER_PORT)) {
+    if (!Start(ServerEngine, DEFAULT_QUICLAN_SERVER_PORT)) {
         Result = false;
-        printf("Failed starting Engine1\n");
+        printf("Failed starting ServerEngine\n");
         goto Cleanup;
     }
 
-    if (!Start(Engine2, DEFAULT_QUICLAN_SERVER_PORT+1)) {
+    if (!Start(ClientEngine, DEFAULT_QUICLAN_SERVER_PORT+1)) {
         Result = false;
-        printf("Failed starting Engine2\n");
+        printf("Failed starting ClientEngine\n");
         goto Cleanup;
     }
 
     {
-        // Wait for Engine1 to get an IP address
-        std::unique_lock lk(Engine1Mutex);
-        Engine1Cv.wait(lk, []{return Engine1v4Address.length() > 0;});
-        printf("Engine1 IP4 Address %s\n", Engine1v4Address.c_str());
+        // Wait for ServerEngine to get an IP address
+        std::unique_lock lk(ServerEngineMutex);
+        ServerEngineCv.wait(lk, []{return ServerEnginev4Address.length() > 0;});
+        printf("ServerEngine IP4 Address %s\n", ServerEnginev4Address.c_str());
+        printf("ServerEngine IP6 Address %s\n", ServerEnginev6Address.c_str());
     }
     {
-        // Wait for Engine2 to get an IP address
-        std::unique_lock lk(Engine2Mutex);
-        Engine2Cv.wait(lk, []{return Engine2v4Address.length() > 0;});
-        printf("Engine2 IP4 address %s\n", Engine2v4Address.c_str());
+        // Wait for ClientEngine to get an IP address
+        std::unique_lock lk(ClientEngineMutex);
+        ClientEngineCv.wait(lk, []{return ClientEnginev4Address.length() > 0;});
+        printf("ClientEngine IP4 address %s\n", ClientEnginev4Address.c_str());
+        printf("ClientEngine IP6 address %s\n", ClientEnginev6Address.c_str());
     }
 
-    Engine1Packet = RequestPacket(Engine1);
-    Engine2Packet = RequestPacket(Engine2);
+    ServerEnginePacket = RequestPacket(ServerEngine);
+    ClientEnginePacket = RequestPacket(ClientEngine);
 
     // Populate packets with valid IPv4 header matching destination IP address
     PopulateHeader(
-        (struct ip*) Engine1Packet->Buffer,
-        Engine1v4Address.c_str(),
-        Engine2v4Address.c_str(),
-        Engine1Mtu);
+        (struct ip*) ServerEnginePacket->Buffer,
+        ServerEnginev4Address.c_str(),
+        ClientEnginev4Address.c_str(),
+        ServerEngineMtu);
 
     PopulateHeader(
-        (struct ip*) Engine2Packet->Buffer,
-        Engine2v4Address.c_str(),
-        Engine1v4Address.c_str(),
-        Engine2Mtu);
+        (struct ip*) ClientEnginePacket->Buffer,
+        ClientEnginev4Address.c_str(),
+        ServerEnginev4Address.c_str(),
+        ClientEngineMtu);
 
-    if (!Send(Engine1, Engine1Packet)) {
+    if (!Send(ServerEngine, ServerEnginePacket)) {
         Result = false;
-        printf("Failed sending Engine1! Engine1Mtu: %u\n",Engine1Mtu);
+        printf("Failed sending ServerEngine! ServerEngineMtu: %u\n",ServerEngineMtu);
         goto Cleanup;
     }
-    if (!Send(Engine2, Engine2Packet)) {
+    if (!Send(ClientEngine, ClientEnginePacket)) {
         Result = false;
-        printf("Failed sending Engine2! Engine2Mtu: %u\n", Engine2Mtu);
+        printf("Failed sending ClientEngine! ClientEngineMtu: %u\n", ClientEngineMtu);
         goto Cleanup;
     }
 
     {
-        // Wait for Engine1 to get a packet
-        std::unique_lock lk(Engine1Mutex);
-        Engine1Cv.wait(lk, []{return Engine1ReceivedData;});
+        // Wait for ServerEngine to get a packet
+        std::unique_lock lk(ServerEngineMutex);
+        ServerEngineCv.wait(lk, []{return ServerEngineReceivedData;});
     }
     {
-        // Wait for Engine2 to get a packet
-        std::unique_lock lk(Engine2Mutex);
-        Engine2Cv.wait(lk, []{return Engine2ReceivedData;});
+        // Wait for ClientEngine to get a packet
+        std::unique_lock lk(ClientEngineMutex);
+        ClientEngineCv.wait(lk, []{return ClientEngineReceivedData;});
     }
 
-    assert(Engine1ReceivedData);
-    assert(Engine2ReceivedData);
+    assert(ServerEngineReceivedData);
+    assert(ClientEngineReceivedData);
 
     printf("Packets received and test passed!\n");
 
-    if (!Stop(Engine1)) {
+    if (!Stop(ServerEngine)) {
         Result = false;
-        printf("Failed stopping Engine1\n");
+        printf("Failed stopping ServerEngine\n");
     }
-    if (!Stop(Engine2)) {
+    if (!Stop(ClientEngine)) {
         Result = false;
-        printf("Failed stopping Engine2\n");
+        printf("Failed stopping ClientEngine\n");
     }
 
 Cleanup:
-    UninitializeQuicLanEngine(Engine1);
-    UninitializeQuicLanEngine(Engine2);
+    UninitializeQuicLanEngine(ServerEngine);
+    UninitializeQuicLanEngine(ClientEngine);
 
     return Result;
 }
