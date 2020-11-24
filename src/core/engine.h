@@ -15,7 +15,7 @@ struct QuicLanPeerContext {
     QUIC_ADDR ExternalAddress;
     QUIC_ADDR InternalAddress4; // TODO: Save client address here when they announce it.
     QUIC_ADDR InternalAddress6; // Ditto.
-    std::mutex Lock; // Lock to protect this from modification while being used.
+    std::shared_mutex Lock; // Lock to protect this from modification while being used.
     struct {
         uint32_t AddressReserved : 1;
         uint32_t Connected : 1;
@@ -25,6 +25,7 @@ struct QuicLanPeerContext {
         uint32_t ControlStreamOpen : 1;
         uint32_t ControlStreamClosed : 1;
         uint32_t TimedOut : 1;
+        uint32_t Disconnecting : 1;
         uint32_t Disconnected : 1;
     } State;
     uint32_t Server : 1;
@@ -54,8 +55,8 @@ struct QuicLanEngine {
         _In_ HQUIC AuthStream,
         _In_ QuicLanPeerContext* PeerContext);
 
-    bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
-    bool RemovePeer(_In_ QuicLanPeerContext* Peer) {std::lock_guard Lock(PeersLock); if (ShuttingDown) return false; auto it = Peers.begin(); while(*it != Peer) it++; if (it != Peers.end()) Peers.erase(it); Peer->Inserted = false; return true;}
+    bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
+    bool RemovePeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; auto it = Peers.begin(); while(*it != Peer) it++; if (it != Peers.end()) Peers.erase(it); Peer->Inserted = false; return true;}
 
     void
     IncrementOutstandingDatagrams();
@@ -164,7 +165,7 @@ struct QuicLanEngine {
     QUIC_ADDR Ip4VpnAddress;
     QUIC_ADDR Ip6VpnAddress;
 
-    std::mutex PeersLock;
+    std::shared_mutex PeersLock;
     std::vector<QuicLanPeerContext*> Peers;
 
     std::mutex DatagramsOutstandingLock;

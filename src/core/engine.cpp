@@ -322,7 +322,7 @@ QuicLanEngine::Send(
 {
     QuicLanPeerContext* FoundPeer = nullptr;
     {
-        std::lock_guard ListLock(PeersLock);
+        std::shared_lock ListLock(PeersLock);
         if (ShuttingDown) {
             goto Error;
         }
@@ -333,7 +333,7 @@ QuicLanEngine::Send(
             for (auto Peer : Peers) {
                 if (memcmp(&Peer->InternalAddress4.Ipv4.sin_addr, &Ip4Header->ip_dst, sizeof(in_addr)) == 0) {
                     FoundPeer = Peer;
-                    Peer->Lock.lock();
+                    Peer->Lock.lock_shared();
                     break;
                 }
             }
@@ -343,7 +343,7 @@ QuicLanEngine::Send(
             for (auto Peer : Peers) {
                 if (memcmp(&Peer->InternalAddress4.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
                     FoundPeer = Peer;
-                    Peer->Lock.lock();
+                    Peer->Lock.lock_shared();
                     break;
                 }
             }
@@ -358,7 +358,7 @@ QuicLanEngine::Send(
                 1,
                 QUIC_SEND_FLAG_NONE,
                 SendBuffer);
-        FoundPeer->Lock.unlock();
+        FoundPeer->Lock.unlock_shared();
         if (QUIC_FAILED(Status)) {
             printf("DatagramSend failed! %u\n", Status);
             goto Error;
@@ -381,9 +381,11 @@ QuicLanEngine::Stop()
     // TODO: Inform all peers of the disconnect
 
     {
-        std::lock_guard Lock(PeersLock);
+        std::shared_lock Lock(PeersLock);
         ShuttingDown = true;
         for (auto Peer : Peers) {
+            std::unique_lock PeerLock(Peer->Lock);
+            Peer->State.Disconnecting = true;
             MsQuic->ConnectionShutdown(
                 Peer->Connection,
                 QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
@@ -859,7 +861,7 @@ QuicLanEngine::ServerControlStreamCallback(
                     continue;
                 }
                 {
-                    std::lock_guard Lock(This->Engine->PeersLock);
+                    std::shared_lock Lock(This->Engine->PeersLock);
                     for (auto Peer : This->Engine->Peers) {
                         if (Peer->ID == newId) {
                             continue;

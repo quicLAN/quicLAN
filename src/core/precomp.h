@@ -15,6 +15,7 @@
 #undef max
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <random>
 #include <string.h>
