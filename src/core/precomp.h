@@ -10,7 +10,7 @@
 // These will need to be moved into a platform abstraction layer
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
-
+// MsQuic headers define min/max macros. Undefine them.
 #undef min
 #undef max
 #include <vector>
@@ -18,7 +18,11 @@
 #include <shared_mutex>
 #include <condition_variable>
 #include <random>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <string.h>
 
+#include "timer.h"
 #include "messages.h"
 #include "engine.h"
