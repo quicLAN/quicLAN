@@ -835,13 +835,18 @@ QuicLanEngine::ServerControlStreamCallback(
     QuicLanPeerContext *This = (QuicLanPeerContext*)Context;
     switch (Event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
-        QuicLanMessageHeader* Header = (QuicLanMessageHeader*) Event->RECEIVE.Buffers[0].Buffer;
+        QuicLanMessageType Type;
+        uint16_t MessageHostId;
         if (Event->RECEIVE.Buffers[0].Length < sizeof(QuicLanMessageHeader)) {
             printf("Server received message that's too small. %u bytes\n",
                 Event->RECEIVE.Buffers[0].Length);
             return QUIC_STATUS_SUCCESS;
         }
-        switch (Header->Type) {
+        if (!QuicLanMessageHeaderParse(Event->RECEIVE.Buffers[0].Buffer, &Type, &MessageHostId)) {
+            printf("Server received invalid message!\n");
+            return QUIC_STATUS_SUCCESS;
+        }
+        switch (Type) {
         case RequestId:
             if (Event->RECEIVE.Buffers[0].Length != sizeof(QuicLanMessageHeader)) {
                 printf("Server received invalid RequestId message. Length: %u vs. %u\n",
@@ -878,8 +883,9 @@ QuicLanEngine::ServerControlStreamCallback(
             Buffer->Length = sizeof(QuicLanMessageHeader) + sizeof(uint16_t);
             Buffer->Buffer = (uint8_t*) (Buffer + 1);
             QuicLanMessageHeader* Header = (QuicLanMessageHeader*) Buffer->Buffer;
-            Header->Type = (uint8_t) AssignId;
-            // TODO: fill out MessageId
+
+            QuicLanMessageHeaderFormat(AssignId, This->Engine->ID, Buffer->Buffer);
+
             memcpy(Header + 1, &newId, sizeof(newId));
             if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, Buffer, 1, QUIC_SEND_FLAG_NONE, Buffer))) {
                 printf("Server failed to send AssignId message to client.\n");
@@ -920,12 +926,10 @@ QuicLanEngine::ClientControlStreamCallback(
         } else if (This->FirstConnection) {
             // Start client by requesting IP address.
             QUIC_BUFFER* Buffer = (QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + sizeof(QuicLanMessageHeader)];
-            QuicLanMessageHeader* Message = (QuicLanMessageHeader*) (Buffer + 1);
             Buffer->Length = sizeof(QuicLanMessageHeader);
-            Buffer->Buffer = (uint8_t*) Message;
+            Buffer->Buffer = (uint8_t*) (Buffer + 1);
 
-            Message->Type = (uint8_t) RequestId;
-            // TODO: Fill out MessageId
+            QuicLanMessageHeaderFormat(RequestId, This->Engine->ID, Buffer->Buffer);
 
             if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, Buffer, 1, QUIC_SEND_FLAG_NONE, Buffer))) {
                 printf("Client failed to send requestId message! \n");
@@ -935,18 +939,28 @@ QuicLanEngine::ClientControlStreamCallback(
         break;
     case QUIC_STREAM_EVENT_RECEIVE: {
         QuicLanMessageHeader* Header  = (QuicLanMessageHeader*) Event->RECEIVE.Buffers[0].Buffer;
+        QuicLanMessageType Type;
+        uint16_t MessageHostId;
         QuicLanTunnelEvent TunnelEvent;
         if (Event->RECEIVE.Buffers[0].Length < sizeof(QuicLanMessageHeader)) {
             printf("Client received message that's too small. %u bytes\n",
                 Event->RECEIVE.Buffers[0].Length);
             return QUIC_STATUS_SUCCESS;
         }
-        switch (Header->Type) {
+        if (!QuicLanMessageHeaderParse(Event->RECEIVE.Buffers[0].Buffer, &Type, &MessageHostId)) {
+            printf("Client received invalid message!\n");
+            return QUIC_STATUS_SUCCESS;
+        }
+        switch (Type) {
         case AssignId:
             if (Event->RECEIVE.Buffers[0].Length != sizeof(QuicLanMessageHeader) + sizeof(uint16_t)) {
                 printf("Client received invalid AssignId message. Length: %u vs. %u\n",
                 Event->RECEIVE.Buffers[0].Length,
                 sizeof(QuicLanMessageHeader) + sizeof(uint16_t));
+                return QUIC_STATUS_SUCCESS;
+            }
+            if (MessageHostId != This->ID) {
+                printf("Client received AssignId message from a different host than server!\n");
                 return QUIC_STATUS_SUCCESS;
             }
             // ID is in network-order.
