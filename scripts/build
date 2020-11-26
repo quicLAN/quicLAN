@@ -1,0 +1,57 @@
+#!/bin/bash
+
+clean=
+generate=
+
+usage()
+{
+    echo "-c | --clean          Clean build directory before building (implies -g)."
+    echo "-g | --generate       Generates build files from CMake files before build."
+    echo "-h | --help           Prints this help text."
+}
+
+do_clean()
+{
+    rm -rf build/*
+}
+
+do_generate()
+{
+    pushd ./build
+    cmake -g 'Linux Makefiles' ..
+    popd
+}
+
+do_build()
+{
+    pushd ./build
+    cmake --build . --parallel 16
+    popd
+}
+
+# Process arguments
+while [ "$1" != "" ]; do
+    case $1 in
+        -c | --clean )          clean=1
+                                generate=1
+                                ;;
+        -g | --generate )       generate=1
+                                ;;
+        -h | --help )           usage
+                                exit
+                                ;;
+        * )                     usage
+                                exit 1
+    esac
+    shift
+done
+
+if [ "$clean" == "1" ]; then
+    do_clean
+fi
+
+if [ "$generate" == "1" ]; then
+    do_generate
+fi
+
+do_build
