@@ -3,6 +3,7 @@
 */
 
 #include "tests.h"
+#include <atomic>
 #include "../core/messages.h"
 
 bool

@@ -3,7 +3,7 @@
 */
 #include "precomp.h"
 
-void
+uint8_t*
 QuicLanMessageHeaderFormat(
     _In_ QuicLanMessageType Type,
     _In_ uint16_t HostId,
@@ -20,6 +20,7 @@ QuicLanMessageHeaderFormat(
     auto Random = Rand();
     Header[6] = (uint8_t) Random;
     Header[7] = (uint8_t) (Random >> 8);
+    return Header + 8;
 }
 
 
@@ -50,4 +51,24 @@ QuicLanMessageHeaderParse(
     *Type = (QuicLanMessageType) Header[3];
     memcpy(HostId, Header + 4, sizeof(*HostId));
     return true;
+}
+
+QuicLanMessage*
+QuicLanMessageAlloc(
+    _In_ uint32_t PayloadLength)
+{
+    QuicLanMessage* NewMessage = (QuicLanMessage*) new uint8_t[sizeof(QuicLanMessage) + sizeof(QuicLanMessageHeader) + PayloadLength];
+    NewMessage->QuicBuffer.Length = sizeof(QuicLanMessageHeader) + PayloadLength;
+    NewMessage->QuicBuffer.Buffer = NewMessage->Buffer;
+    NewMessage->RefCount = 1;
+    return NewMessage;
+}
+
+void
+QuicLanMessageFree(
+    _In_ QuicLanMessage* Message)
+{
+    if (--Message->RefCount == 0) {
+        delete [] (uint8_t*) Message;
+    }
 }

@@ -879,23 +879,21 @@ QuicLanEngine::ServerControlStreamCallback(
             This->ID = newId;
             ConvertIdToAddress(newId, This->InternalAddress4, This->InternalAddress6);
 
-            QUIC_BUFFER* Buffer = (QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + sizeof(QuicLanMessageHeader) + sizeof(uint16_t)];
-            Buffer->Length = sizeof(QuicLanMessageHeader) + sizeof(uint16_t);
-            Buffer->Buffer = (uint8_t*) (Buffer + 1);
-            QuicLanMessageHeader* Header = (QuicLanMessageHeader*) Buffer->Buffer;
+            QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
 
-            QuicLanMessageHeaderFormat(AssignId, This->Engine->ID, Buffer->Buffer);
+            uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, This->Engine->ID, Message->Buffer);
 
-            memcpy(Header + 1, &newId, sizeof(newId));
-            if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, Buffer, 1, QUIC_SEND_FLAG_NONE, Buffer))) {
+            memcpy(Payload, &newId, sizeof(newId));
+            if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Message))) {
                 printf("Server failed to send AssignId message to client.\n");
+                QuicLanMessageFree(Message);
             }
         }
         break;
     }
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
         // Delete the send data allocated here.
-        delete[] (uint8_t*) Event->SEND_COMPLETE.ClientContext;
+        QuicLanMessageFree((QuicLanMessage*) Event->SEND_COMPLETE.ClientContext);
         break;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         // If inserted into the list of Peers, this will be cleaned up during
@@ -925,14 +923,13 @@ QuicLanEngine::ClientControlStreamCallback(
             // TODO: shutdown the connection.
         } else if (This->FirstConnection) {
             // Start client by requesting IP address.
-            QUIC_BUFFER* Buffer = (QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + sizeof(QuicLanMessageHeader)];
-            Buffer->Length = sizeof(QuicLanMessageHeader);
-            Buffer->Buffer = (uint8_t*) (Buffer + 1);
+            QuicLanMessage* Message = QuicLanMessageAlloc(0);
 
-            QuicLanMessageHeaderFormat(RequestId, This->Engine->ID, Buffer->Buffer);
+            QuicLanMessageHeaderFormat(RequestId, This->Engine->ID, Message->Buffer);
 
-            if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, Buffer, 1, QUIC_SEND_FLAG_NONE, Buffer))) {
+            if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Message))) {
                 printf("Client failed to send requestId message! \n");
+                QuicLanMessageFree(Message);
             }
 
         }
@@ -983,7 +980,7 @@ QuicLanEngine::ClientControlStreamCallback(
     }
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
         // Delete the send data allocated here.
-        delete[] (uint8_t*) Event->SEND_COMPLETE.ClientContext;
+        QuicLanMessageFree((QuicLanMessage*) Event->SEND_COMPLETE.ClientContext);
         break;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         // If inserted into the list of Peers, this will be cleaned up during

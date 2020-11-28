@@ -24,7 +24,19 @@ union QuicLanMessageHeader {
     uint64_t Id;
 };
 
-void
+struct QuicLanMessage {
+    std::atomic_uint32_t RefCount;
+    QUIC_BUFFER QuicBuffer;
+    _Field_size_bytes_(QuicBuffer.Length)
+    uint8_t Buffer[0];
+};
+
+/*
+    Formats a QuicLanMessageHeader into a byte buffer, with all fields fully
+    populated.
+    Returns a pointer to the end of the header.
+*/
+uint8_t*
 QuicLanMessageHeaderFormat(
     _In_ QuicLanMessageType Type,
     _In_ uint16_t HostId,
@@ -36,3 +48,15 @@ QuicLanMessageHeaderParse(
     _In_reads_bytes_(sizeof(QuicLanMessageHeader)) const uint8_t* const Header,
     _Out_ QuicLanMessageType* Type,
     _Out_ uint16_t* HostId);
+
+/*
+    Every message includes a header, so the PayloadLength does not need to include the header length.
+    Buffer is pointing to where the header starts.
+*/
+QuicLanMessage*
+QuicLanMessageAlloc(
+    _In_ uint32_t PayloadLength);
+
+void
+QuicLanMessageFree(
+    _In_ QuicLanMessage* Message);
