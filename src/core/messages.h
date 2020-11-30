@@ -46,6 +46,7 @@ QuicLanMessageHeaderFormat(
 bool
 QuicLanMessageHeaderParse(
     _In_reads_bytes_(sizeof(QuicLanMessageHeader)) const uint8_t* const Header,
+    _Inout_ uint32_t* Offset,
     _Out_ QuicLanMessageType* Type,
     _Out_ uint16_t* HostId);
 

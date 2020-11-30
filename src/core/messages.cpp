@@ -27,11 +27,12 @@ QuicLanMessageHeaderFormat(
 bool
 QuicLanMessageHeaderParse(
     _In_reads_bytes_(sizeof(QuicLanMessageHeader)) const uint8_t* const Header,
+    _Inout_ uint32_t* Offset,
     _Out_ QuicLanMessageType* Type,
     _Out_ uint16_t* HostId)
 {
     using namespace std::chrono;
-    auto MessageTimestamp = milliseconds((Header[0] << 16) | (Header[1] << 8) | Header[2]);
+    auto MessageTimestamp = milliseconds((Header[*Offset + 0] << 16) | (Header[*Offset + 1] << 8) | Header[*Offset + 2]);
     auto CurrentTime = milliseconds(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() & 0xffffff);
 
     if (CurrentTime < MessageTimestamp) {
@@ -44,12 +45,13 @@ QuicLanMessageHeaderParse(
             return false;
         }
     }
-    if (Header[3] >= MaxMessageType || Header[3] == InvalidMessage) {
+    if (Header[*Offset + 3] >= MaxMessageType || Header[*Offset + 3] == InvalidMessage) {
         return false;
     }
 
-    *Type = (QuicLanMessageType) Header[3];
-    memcpy(HostId, Header + 4, sizeof(*HostId));
+    *Type = (QuicLanMessageType) Header[*Offset + 3];
+    memcpy(HostId, Header + *Offset + 4, sizeof(*HostId));
+    *Offset += sizeof(QuicLanMessageHeader);
     return true;
 }
 

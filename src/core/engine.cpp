@@ -835,58 +835,67 @@ QuicLanEngine::ServerControlStreamCallback(
     QuicLanPeerContext *This = (QuicLanPeerContext*)Context;
     switch (Event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
-        QuicLanMessageType Type;
-        uint16_t MessageHostId;
-        if (Event->RECEIVE.Buffers[0].Length < sizeof(QuicLanMessageHeader)) {
-            printf("Server received message that's too small. %u bytes\n",
-                Event->RECEIVE.Buffers[0].Length);
-            return QUIC_STATUS_SUCCESS;
-        }
-        if (!QuicLanMessageHeaderParse(Event->RECEIVE.Buffers[0].Buffer, &Type, &MessageHostId)) {
-            printf("Server received invalid message!\n");
-            return QUIC_STATUS_SUCCESS;
-        }
-        switch (Type) {
-        case RequestId:
-            if (Event->RECEIVE.Buffers[0].Length != sizeof(QuicLanMessageHeader)) {
-                printf("Server received invalid RequestId message. Length: %u vs. %u\n",
-                Event->RECEIVE.Buffers[0].Length,
-                sizeof(QuicLanMessageHeader));
+        uint32_t Offset = 0;
+        const QUIC_BUFFER* ReceiveBuffer = &Event->RECEIVE.Buffers[0];
+        // TODO: support multiple buffers
+        while (Offset < ReceiveBuffer->Length) {
+            QuicLanMessageType Type;
+            uint16_t MessageHostId;
+            if (ReceiveBuffer->Length - Offset < sizeof(QuicLanMessageHeader)) {
+                // TODO: Handle split across two buffer here
+                printf("Server received message that's too small. %u bytes\n",
+                    Event->RECEIVE.Buffers[0].Length);
                 return QUIC_STATUS_SUCCESS;
             }
-            std::minstd_rand Rng;
-            Rng.seed(This->ExternalAddress.Ipv4.sin_addr.s_addr);
-            bool Generate = true;
-            uint16_t newId = 0;
-            do {
-                // check if it's in the list of known peers, or equal to this id
-                newId = (uint16_t) ((Rng() % 65023u) + 257u);
-                newId = QuicByteSwapUint16(newId);
-                if (newId == This->Engine->ID) {
-                    continue;
-                }
-                {
-                    std::shared_lock Lock(This->Engine->PeersLock);
-                    for (auto Peer : This->Engine->Peers) {
-                        if (Peer->ID == newId) {
-                            continue;
+
+            if (!QuicLanMessageHeaderParse(ReceiveBuffer->Buffer, &Offset, &Type, &MessageHostId)) {
+                // TODO: Skip bad messages
+                printf("Server received invalid message!\n");
+                return QUIC_STATUS_SUCCESS;
+            }
+
+            switch (Type) {
+            case RequestId: {
+                std::minstd_rand Rng;
+                // TODO: support IPv6 external addresses.
+                Rng.seed(This->ExternalAddress.Ipv4.sin_addr.s_addr);
+                bool Generate = true;
+                uint16_t newId = 0;
+                do {
+                    // check if it's in the list of known peers, or equal to this id
+                    newId = (uint16_t) ((Rng() % 65023u) + 257u);
+                    newId = QuicByteSwapUint16(newId);
+                    if (newId == This->Engine->ID) {
+                        continue;
+                    }
+                    {
+                        std::shared_lock Lock(This->Engine->PeersLock);
+                        for (auto Peer : This->Engine->Peers) {
+                            if (Peer->ID == newId) {
+                                continue;
+                            }
                         }
                     }
+                    Generate = false;
+                } while (Generate);
+                printf("Assigning %x ID to client\n", newId);
+                This->ID = newId;
+                ConvertIdToAddress(newId, This->InternalAddress4, This->InternalAddress6);
+
+                QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
+
+                uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, This->Engine->ID, Message->Buffer);
+
+                memcpy(Payload, &newId, sizeof(newId));
+                if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Message))) {
+                    printf("Server failed to send AssignId message to client.\n");
+                    QuicLanMessageFree(Message);
                 }
-                Generate = false;
-            } while (Generate);
-            printf("Assigning %x ID to client\n", newId);
-            This->ID = newId;
-            ConvertIdToAddress(newId, This->InternalAddress4, This->InternalAddress6);
-
-            QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
-
-            uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, This->Engine->ID, Message->Buffer);
-
-            memcpy(Payload, &newId, sizeof(newId));
-            if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Message))) {
-                printf("Server failed to send AssignId message to client.\n");
-                QuicLanMessageFree(Message);
+                break;
+            }
+            default:
+                printf("Server received unsupported message type: %x\n", Type);
+                break;
             }
         }
         break;
@@ -935,46 +944,52 @@ QuicLanEngine::ClientControlStreamCallback(
         }
         break;
     case QUIC_STREAM_EVENT_RECEIVE: {
-        QuicLanMessageHeader* Header  = (QuicLanMessageHeader*) Event->RECEIVE.Buffers[0].Buffer;
-        QuicLanMessageType Type;
-        uint16_t MessageHostId;
         QuicLanTunnelEvent TunnelEvent;
-        if (Event->RECEIVE.Buffers[0].Length < sizeof(QuicLanMessageHeader)) {
-            printf("Client received message that's too small. %u bytes\n",
-                Event->RECEIVE.Buffers[0].Length);
-            return QUIC_STATUS_SUCCESS;
-        }
-        if (!QuicLanMessageHeaderParse(Event->RECEIVE.Buffers[0].Buffer, &Type, &MessageHostId)) {
-            printf("Client received invalid message!\n");
-            return QUIC_STATUS_SUCCESS;
-        }
-        switch (Type) {
-        case AssignId:
-            if (Event->RECEIVE.Buffers[0].Length != sizeof(QuicLanMessageHeader) + sizeof(uint16_t)) {
-                printf("Client received invalid AssignId message. Length: %u vs. %u\n",
-                Event->RECEIVE.Buffers[0].Length,
-                sizeof(QuicLanMessageHeader) + sizeof(uint16_t));
+        uint32_t Offset = 0;
+        const QUIC_BUFFER* ReceiveBuffer = &Event->RECEIVE.Buffers[0];
+        // TODO: Support multiple buffers
+        while (Offset < ReceiveBuffer->Length) {
+            QuicLanMessageType Type;
+            uint16_t MessageHostId;
+            if (ReceiveBuffer->Length - Offset < sizeof(QuicLanMessageHeader)) {
+                // TODO: handle header split across multiple buffers
+                printf("Client received message that's too small. %u bytes\n",
+                    Event->RECEIVE.Buffers[0].Length);
                 return QUIC_STATUS_SUCCESS;
             }
-            if (MessageHostId != This->ID) {
-                printf("Client received AssignId message from a different host than server!\n");
+            if (!QuicLanMessageHeaderParse(Event->RECEIVE.Buffers[0].Buffer, &Offset, &Type, &MessageHostId)) {
+                // TODO: support skipping bad messages
+                printf("Client received invalid message!\n");
                 return QUIC_STATUS_SUCCESS;
             }
-            // ID is in network-order.
-            memcpy(&This->Engine->ID, Header + 1, sizeof(uint16_t));
-            ConvertIdToAddress(This->Engine->ID, This->Engine->Ip4VpnAddress, This->Engine->Ip6VpnAddress);
-            char Ip4TunnelAddress[INET_ADDRSTRLEN];
-            char Ip6TunnelAddress[INET6_ADDRSTRLEN];
-            TunnelEvent.IpAddressReady.IPv4Addr =
-                inet_ntop(AF_INET, &This->Engine->Ip4VpnAddress.Ipv4.sin_addr, Ip4TunnelAddress, sizeof(Ip4TunnelAddress));
-            TunnelEvent.IpAddressReady.IPv6Addr =
-                inet_ntop(AF_INET6, &This->Engine->Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
-            TunnelEvent.Type = TunnelIpAddressReady;
-            This->Engine->EventHandler(&TunnelEvent);
-        break;
-        default:
-            printf("Client doesn't implement support for message type %u\n", Header->Type);
-        break;
+            switch (Type) {
+            case AssignId:
+                if (ReceiveBuffer->Length - Offset < sizeof(uint16_t)) {
+                    printf("Client received invalid AssignId message. Length: %u vs. %u\n",
+                    ReceiveBuffer->Length - Offset,
+                    sizeof(uint16_t));
+                    return QUIC_STATUS_SUCCESS;
+                }
+                if (MessageHostId != This->ID) {
+                    printf("Client received AssignId message from a different host than server!\n");
+                    return QUIC_STATUS_SUCCESS;
+                }
+                // ID is in network-order.
+                memcpy(&This->Engine->ID, ReceiveBuffer->Buffer + Offset, sizeof(uint16_t));
+                ConvertIdToAddress(This->Engine->ID, This->Engine->Ip4VpnAddress, This->Engine->Ip6VpnAddress);
+                char Ip4TunnelAddress[INET_ADDRSTRLEN];
+                char Ip6TunnelAddress[INET6_ADDRSTRLEN];
+                TunnelEvent.IpAddressReady.IPv4Addr =
+                    inet_ntop(AF_INET, &This->Engine->Ip4VpnAddress.Ipv4.sin_addr, Ip4TunnelAddress, sizeof(Ip4TunnelAddress));
+                TunnelEvent.IpAddressReady.IPv6Addr =
+                    inet_ntop(AF_INET6, &This->Engine->Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
+                TunnelEvent.Type = TunnelIpAddressReady;
+                This->Engine->EventHandler(&TunnelEvent);
+            break;
+            default:
+                printf("Client doesn't implement support for message type %u\n", Type);
+            break;
+            }
         }
         break;
     }
