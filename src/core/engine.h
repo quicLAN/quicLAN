@@ -134,16 +134,7 @@ struct QuicLanEngine {
     _Function_class_(QUIC_STREAM_CALLBACK)
     QUIC_STATUS
     QUIC_API
-    ServerControlStreamCallback(
-        _In_ HQUIC Stream,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_STREAM_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_STREAM_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ClientControlStreamCallback(
+    ControlStreamCallback(
         _In_ HQUIC Stream,
         _In_opt_ void* Context,
         _Inout_ QUIC_STREAM_EVENT* Event);
