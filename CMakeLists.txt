@@ -12,7 +12,7 @@ else()
     set(QUICLAN_COMMON_FLAGS "-DQUIC_PLATFORM_LINUX -fms-extensions -fPIC -pthread -Wl,--no-as-needed -ldl")
 
     set(QUICLAN_C_FLAGS "${QUICLAN_COMMON_FLAGS}")
-    set(QUICLAN_CXX_FLAGS "${QUICLAN_COMMON_FLAGS} --std=c++17 -g -Wno-reorder -Wno-sign-compare -Wno-format")
+    set(QUICLAN_CXX_FLAGS "${QUICLAN_COMMON_FLAGS} --std=c++20 -g -Wno-reorder -Wno-sign-compare -Wno-format")
 endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/src/inc)

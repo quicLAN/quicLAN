@@ -22,8 +22,8 @@ const uint8_t QuicLanIpv6Prefix[] = {0xfd, 0x71, 0x75, 0x69, 0x63, 0x6c, 0x61, 0
 const uint16_t UdpPort = 7490;
 const uint64_t IdleTimeoutMs = 30000;
 const uint64_t MaxBytesPerKey = 1000000;
-const uint8_t DatagramsEnabled = TRUE;
-const uint32_t KeepAliveMs = 5000;
+const uint8_t DatagramsEnabled = true;
+const uint32_t KeepAliveMs = 10000;
 const uint16_t BiDiStreamCount = 1;
 
 const uint32_t MaxDatagramsOutstanding = 50;
@@ -866,14 +866,18 @@ QuicLanEngine::ControlStreamCallback(
             uint16_t MessageHostId;
             if (ReceiveBuffer->Length - Offset < sizeof(QuicLanMessageHeader)) {
                 // TODO: Handle split across two buffer here
-                printf("Server received message that's too small. %u bytes\n",
+                printf(
+                    "%s received message that's too small. %u bytes\n",
+                    This->Server ? "Server" : "Client",
                     ReceiveBuffer->Length - Offset);
                 return QUIC_STATUS_SUCCESS;
             }
 
             if (!QuicLanMessageHeaderParse(ReceiveBuffer->Buffer, &Offset, &Type, &MessageHostId)) {
                 // TODO: Skip bad messages
-                printf("Server received invalid message!\n");
+                printf(
+                    "%s received invalid message!\n",
+                    This->Server ? "Server" : "Client");
                 return QUIC_STATUS_SUCCESS;
             }
 
@@ -935,6 +939,9 @@ QuicLanEngine::ControlStreamCallback(
                     // ID is in network-order.
                     memcpy(&This->Engine->ID, ReceiveBuffer->Buffer + Offset, sizeof(uint16_t));
                     ConvertIdToAddress(This->Engine->ID, This->Engine->Ip4VpnAddress, This->Engine->Ip6VpnAddress);
+                    Offset += sizeof(uint16_t);
+
+                    // Notify VPN that IP addresses are ready.
                     char Ip4TunnelAddress[INET_ADDRSTRLEN];
                     char Ip6TunnelAddress[INET6_ADDRSTRLEN];
                     TunnelEvent.IpAddressReady.IPv4Addr =
@@ -943,13 +950,69 @@ QuicLanEngine::ControlStreamCallback(
                         inet_ntop(AF_INET6, &This->Engine->Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
                     TunnelEvent.Type = TunnelIpAddressReady;
                     This->Engine->EventHandler(&TunnelEvent);
+
+                    QuicLanMessage* RequestPeersMessage = QuicLanMessageAlloc(0);
+                    QuicLanMessageHeaderFormat(RequestPeers, This->Engine->ID, RequestPeersMessage->Buffer);
+                    if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &RequestPeersMessage->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, RequestPeersMessage))) {
+                        printf("Client failed to send RequestPeers message to client.\n");
+                        QuicLanMessageFree(RequestPeersMessage);
+                    }
+
                 } else {
                     printf("Server received AssignId message!\n");
                     // TODO: Kill connection.
                 }
                 break;
+            case RequestPeers: {
+                std::vector<QuicLanKnownPeer4> KnownPeersv4;
+                std::vector<QuicLanKnownPeer6> KnownPeersv6;
+                {
+                    std::shared_lock Lock(This->Engine->PeersLock);
+                    for (auto Peer : This->Engine->Peers) {
+                        if (Peer->ExternalAddress.Ip.sa_family == AF_INET) {
+                            KnownPeersv4.emplace_back(Peer->ExternalAddress.Ipv4.sin_addr, Peer->ExternalAddress.Ipv4.sin_port, Peer->ID);
+                        } else {
+                            KnownPeersv6.emplace_back(Peer->ExternalAddress.Ipv6.sin6_addr, Peer->ExternalAddress.Ipv6.sin6_port, Peer->ID);
+                        }
+                    }
+                }
+                if (KnownPeersv4.size() > 0) {
+                    QuicLanMessage* Peers4Message = QuicLanMessageAlloc((sizeof(QuicLanKnownPeer4) * KnownPeersv4.size()) + sizeof(uint16_t));
+                    uint8_t* Buffer = QuicLanMessageHeaderFormat(KnownPeers4, This->Engine->ID, Peers4Message->Buffer);
+                    Buffer[0] = (KnownPeersv4.size() >> 8) & 0xff; // ASSUME: size() returns less than 65023
+                    Buffer[1] = (KnownPeersv4.size()) & 0xff;
+                    Buffer += 2;
+                    memcpy(Buffer, KnownPeersv4.data(), sizeof(QuicLanKnownPeer4) * KnownPeersv4.size());
+                    if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Peers4Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Peers4Message))) {
+                        printf(
+                            "%s failed to send KnownPeers4 message to %s.\n",
+                            (This->Server ? "Server" : "Client"),
+                            (This->Server ? "client" : "server"));
+                        QuicLanMessageFree(Peers4Message);
+                    }
+                }
+                if (KnownPeersv6.size() > 0) {
+                    QuicLanMessage* Peers6Message = QuicLanMessageAlloc((sizeof(QuicLanKnownPeer6) * KnownPeersv6.size()) + sizeof(uint16_t));
+                    uint8_t* Buffer = QuicLanMessageHeaderFormat(KnownPeers6, This->Engine->ID, Peers6Message->Buffer);
+                    Buffer[0] = (KnownPeersv6.size() >> 8) & 0xff; // ASSUME: size() returns less than 65023
+                    Buffer[1] = (KnownPeersv6.size()) & 0xff;
+                    Buffer += 2;
+                    memcpy(Buffer, KnownPeersv6.data(), sizeof(QuicLanKnownPeer6) * KnownPeersv6.size());
+                    if (QUIC_FAILED(This->Engine->MsQuic->StreamSend(Stream, &Peers6Message->QuicBuffer, 1, QUIC_SEND_FLAG_NONE, Peers6Message))) {
+                        printf(
+                            "%s failed to send KnownPeers6 message to %s.\n",
+                            (This->Server ? "Server" : "Client"),
+                            (This->Server ? "client" : "server"));
+                        QuicLanMessageFree(Peers6Message);
+                    }
+                }
+                }
+                break;
             default:
-                printf("Server received unsupported message type: %x\n", Type);
+                printf(
+                    "%s received unsupported message type: %x\n",
+                    (This->Server ? "Server" : "Client"),
+                    Type);
                 break;
             }
         }

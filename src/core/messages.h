@@ -10,7 +10,8 @@ enum QuicLanMessageType:uint8_t {
     RequestId,
     AssignId,
     RequestPeers,
-    KnownPeers,
+    KnownPeers4,
+    KnownPeers6,
     MaxMessageType
 };
 
@@ -22,6 +23,18 @@ union QuicLanMessageHeader {
         uint16_t Random;
     };
     uint64_t Id;
+};
+
+struct QuicLanKnownPeer4 {
+    in_addr Address;
+    uint16_t Port;
+    uint16_t Id;
+};
+
+struct QuicLanKnownPeer6 {
+    in6_addr Address6;
+    uint16_t Port;
+    uint16_t Id;
 };
 
 struct QuicLanMessage {
