@@ -18,7 +18,7 @@ do_clean()
 do_generate()
 {
     pushd ./build
-    cmake -g 'Linux Makefiles' ..
+    cmake -G 'Unix Makefiles' ..
     popd
 }
 

@@ -717,8 +717,8 @@ QuicLanEngine::ServerAuthStreamCallback(
                 This->Engine->Password);
             This->State.AuthenticationFailed = true;
             if (This->Engine->RemovePeer(This)) {
-                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_PERMISSION_DENIED);
-                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_PERMISSION_DENIED);
+                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
+                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
             }
         } else {
             // Client-provided password matches! Send our password in response and allow client to open control stream.
@@ -795,8 +795,8 @@ QuicLanEngine::ClientAuthStreamCallback(
                 This->Engine->Password);
             This->State.AuthenticationFailed = true;
             if (This->Engine->RemovePeer(This)) {
-                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_PERMISSION_DENIED);
-                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_PERMISSION_DENIED);
+                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
+                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
             }
             // TODO: Indicate to VPN that the last connection has closed, if this is the last.
         } else {
@@ -888,7 +888,7 @@ QuicLanEngine::ControlStreamCallback(
                     do {
                         // check if it's in the list of known peers, or equal to this id
                         newId = (uint16_t) ((Rng() % 65023u) + 257u);
-                        newId = QuicByteSwapUint16(newId);
+                        newId = CxPlatByteSwapUint16(newId);
                         if (newId == This->Engine->ID) {
                             continue;
                         }
