@@ -36,6 +36,14 @@ struct QuicLanPeerContext {
     uint16_t ID; // The low two bytes of the VPN IP address.
 };
 
+struct QuicLanControlStreamReceiveContext {
+    QuicLanPeerContext* Peer;
+    QUIC_BUFFER Data;
+    uint32_t Offset;
+    uint16_t HostId;
+    QuicLanMessageType Type;
+};
+
 struct QuicLanEngine {
 
     bool
@@ -75,6 +83,13 @@ struct QuicLanEngine {
     Stop();
 
     ~QuicLanEngine();
+
+    void
+    WorkerThreadProc();
+
+    bool
+    QueueWorkItem(
+        _In_ QuicLanWorkItem& WorkItem);
 
     static
     _Function_class_(QUIC_LISTENER_CALLBACK)
@@ -134,11 +149,19 @@ struct QuicLanEngine {
     _Function_class_(QUIC_STREAM_CALLBACK)
     QUIC_STATUS
     QUIC_API
-    ControlStreamCallback(
+    SendControlStreamCallback(
         _In_ HQUIC Stream,
         _In_opt_ void* Context,
         _Inout_ QUIC_STREAM_EVENT* Event);
 
+    static
+    _Function_class_(QUIC_STREAM_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ReceiveControlStreamCallback(
+        _In_ HQUIC Stream,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_STREAM_EVENT* Event);
 
     const QUIC_API_TABLE* MsQuic;
     HQUIC Registration;
@@ -155,6 +178,11 @@ struct QuicLanEngine {
 
     QUIC_ADDR Ip4VpnAddress;
     QUIC_ADDR Ip6VpnAddress;
+
+    std::thread WorkerThread;
+    std::list<QuicLanWorkItem> WorkItems;
+    std::mutex WorkItemsLock;
+    std::condition_variable WorkItemsCv;
 
     std::shared_mutex PeersLock;
     std::vector<QuicLanPeerContext*> Peers;

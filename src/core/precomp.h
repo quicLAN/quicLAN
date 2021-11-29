@@ -15,6 +15,7 @@
 #undef min
 #undef max
 #include <vector>
+#include <list>
 #include <mutex>
 #include <shared_mutex>
 #include <condition_variable>
@@ -26,4 +27,5 @@
 
 #include "timer.h"
 #include "messages.h"
+#include "workitem.h"
 #include "engine.h"

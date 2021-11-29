@@ -14,14 +14,12 @@ enum QuicLanMessageType:uint8_t {
     MaxMessageType
 };
 
-union QuicLanMessageHeader {
-    struct {
-        uint8_t Timestamp[3];
-        QuicLanMessageType Type;
-        uint16_t HostId;
-        uint16_t Random;
-    };
-    uint64_t Id;
+struct QuicLanMessageHeader {
+    uint8_t Timestamp[3];
+    QuicLanMessageType Type;
+    uint16_t HostId;
+    uint16_t Random;
+    uint32_t Length;
 };
 
 struct QuicLanMessage {
@@ -40,15 +38,17 @@ uint8_t*
 QuicLanMessageHeaderFormat(
     _In_ QuicLanMessageType Type,
     _In_ uint16_t HostId,
+    _In_ uint32_t Length,
     _Out_writes_bytes_(sizeof(QuicLanMessageHeader)) uint8_t* Header);
 
 
 bool
 QuicLanMessageHeaderParse(
     _In_reads_bytes_(sizeof(QuicLanMessageHeader)) const uint8_t* const Header,
-    _Inout_ uint32_t* Offset,
-    _Out_ QuicLanMessageType* Type,
-    _Out_ uint16_t* HostId);
+    _Inout_ uint32_t& Offset,
+    _Out_ QuicLanMessageType& Type,
+    _Out_ uint16_t& HostId,
+    _Out_ uint32_t& Length);
 
 /*
     Every message includes a header, so the PayloadLength does not need to include the header length.
