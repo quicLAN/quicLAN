@@ -11,7 +11,6 @@ struct QuicLanAuthBlock{
 struct QuicLanPeerContext {
     QuicLanEngine* Engine;
     HQUIC Connection;
-    HQUIC ControlStream;
     QUIC_ADDR ExternalAddress;
     QUIC_ADDR InternalAddress4; // TODO: Save client address here when they announce it.
     QUIC_ADDR InternalAddress6; // Ditto.
@@ -22,8 +21,6 @@ struct QuicLanPeerContext {
         uint32_t Authenticating : 1;
         uint32_t AuthenticationFailed : 1;
         uint32_t Authenticated : 1;
-        uint32_t ControlStreamOpen : 1;
-        uint32_t ControlStreamClosed : 1;
         uint32_t TimedOut : 1;
         uint32_t Disconnecting : 1;
         uint32_t Disconnected : 1;

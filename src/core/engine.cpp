@@ -255,9 +255,6 @@ QuicLanEngine::~QuicLanEngine() {
             MsQuic->ListenerClose(Listener);
         }
         for (auto Peer : Peers) {
-            if (Peer->State.ControlStreamOpen && !Peer->State.ControlStreamClosed) {
-                MsQuic->StreamClose(Peer->ControlStream);
-            }
             MsQuic->ConnectionClose(Peer->Connection);
         }
         if (ServerConfig != nullptr) {
@@ -676,9 +673,6 @@ QuicLanEngine::ClientConnectionCallback(
         This->State.Disconnected = true;
         if (!This->Inserted) {
             This->Engine->MsQuic->ConnectionClose(Connection);
-            if (This->State.ControlStreamOpen && ! This->State.ControlStreamClosed) {
-                This->Engine->MsQuic->StreamClose(This->ControlStream);
-            }
             delete This;
         }
         break;
@@ -783,7 +777,6 @@ QuicLanEngine::ServerUnauthenticatedConnectionCallback(
         This->State.Disconnected = true;
         if (!This->Inserted) {
             This->Engine->MsQuic->ConnectionClose(Connection);
-            assert(!This->State.ControlStreamOpen);
             delete This;
         }
         break;
@@ -830,10 +823,6 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
         This->State.Disconnected = true;
         if (!This->Inserted) {
             This->Engine->MsQuic->ConnectionClose(Connection);
-            if (This->State.ControlStreamOpen && !This->State.ControlStreamClosed) {
-                This->Engine->MsQuic->StreamClose(This->ControlStream);
-                This->State.ControlStreamClosed = true;
-            }
             delete This;
         }
         break;
@@ -842,11 +831,9 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         if (This->State.Authenticated) {
-            This->ControlStream = Event->PEER_STREAM_STARTED.Stream;
             QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
             RecvCtx->Peer = This;
             This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
-            This->State.ControlStreamOpen = true;
         } else {
             // TODO: kill connection; peer tried to start control stream before authenticating.
             printf("Client tried to start stream while not yet authenticated (but this is authenticated callback?)\n");
