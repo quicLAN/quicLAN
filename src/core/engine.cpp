@@ -25,6 +25,7 @@ const uint64_t MaxBytesPerKey = 1000000;
 const uint8_t DatagramsEnabled = TRUE;
 const uint32_t KeepAliveMs = 5000;
 const uint16_t BiDiStreamCount = 1;
+const uint16_t UniDiStreamCount = 1;
 
 const uint32_t MaxDatagramsOutstanding = 50;
 
@@ -82,6 +83,9 @@ QuicLanEngine::WorkerThreadProc()
                                     if (Stream != nullptr) {
                                         MsQuic->StreamClose(Stream);
                                     }
+                                } else {
+                                    // TODO: Create retry logic
+                                    IdRequested = true;
                                 }
                                 break;
                             }
@@ -179,6 +183,7 @@ QuicLanEngine::WorkerThreadProc()
                                 // ID is in network-order.
                                 memcpy(&ID, RecvData.Buffer, sizeof(uint16_t));
                                 ConvertIdToAddress(ID, Ip4VpnAddress, Ip6VpnAddress);
+                                IdAssigned = true;
                                 char Ip4TunnelAddress[INET_ADDRSTRLEN];
                                 char Ip6TunnelAddress[INET6_ADDRSTRLEN];
 
@@ -266,6 +271,10 @@ QuicLanEngine::~QuicLanEngine() {
         }
         MsQuicClose(MsQuic);
     }
+    // Poke worker thread to exit.
+    QuicLanWorkItem WorkItem{};
+    QueueWorkItem(WorkItem);
+    WorkerThread.join();
 };
 
 bool
@@ -291,6 +300,8 @@ QuicLanEngine::StartClient()
     Settings.IsSet.DatagramReceiveEnabled = true;
     Settings.PeerBidiStreamCount = BiDiStreamCount;
     Settings.IsSet.PeerBidiStreamCount = true;
+    Settings.PeerUnidiStreamCount = UniDiStreamCount;
+    Settings.IsSet.PeerUnidiStreamCount = true;
 
     CredConfig.Type = QUIC_CREDENTIAL_TYPE_NONE;
     CredConfig.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
@@ -319,7 +330,7 @@ QuicLanEngine::StartClient()
         goto Error;
     }
 
-    Peer = new QuicLanPeerContext;
+    Peer = new QuicLanPeerContext{};
     Peer->Engine = this;
     Peer->FirstConnection = true;
     // TODO: Hacks for development. Remove when implementing address announcements
@@ -431,6 +442,7 @@ QuicLanEngine::StartServer(
     if (strnlen(ServerAddress, sizeof(ServerAddress)) == 0) {
         // This is a server-only instance, so assign the first IP address.
         ID = 1;
+        IdAssigned = true;
         ConvertIdToAddress(ID, Ip4VpnAddress, Ip6VpnAddress);
         char VpnAddress4[INET_ADDRSTRLEN];
         char VpnAddress6[INET6_ADDRSTRLEN];
@@ -671,10 +683,10 @@ QuicLanEngine::ClientConnectionCallback(
         }
         break;
     case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
-        if (!This->State.Authenticated) {
+        if (!This->State.Authenticated && (Event->STREAMS_AVAILABLE.BidirectionalCount + Event->STREAMS_AVAILABLE.UnidirectionalCount > 0)) {
             printf("Client allowed streams before server authenticated!\n");
         }
-        if (Event->STREAMS_AVAILABLE.UnidirectionalCount > 0 && This->FirstConnection) {
+        if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
             // Start client by requesting IP address.
             QuicLanWorkItem WorkItem;
             WorkItem.Type = ControlMessageSend;
@@ -686,9 +698,13 @@ QuicLanEngine::ClientConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
         if (!This->State.Authenticated && !This->State.Authenticating) {
             This->Engine->ClientAuthenticationStart(Event->PEER_STREAM_STARTED.Stream, This);
+        } else if (This->State.Authenticated) {
+            QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+            RecvCtx->Peer = This;
+            This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
         } else {
-            // TODO: close the connection, the server tried to open a new stream
-            // that is not the authentication stream
+            printf("Client received stream start from server during authentication!\n");
+            assert(false);
         }
         break;
     }
@@ -773,6 +789,7 @@ QuicLanEngine::ServerUnauthenticatedConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         // TODO: kill connection; peer tried to start control stream before authenticating.
+        printf("Client tried to start stream before authenticating!!\n");
         return QUIC_STATUS_NOT_SUPPORTED;
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
@@ -826,10 +843,13 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         if (This->State.Authenticated) {
             This->ControlStream = Event->PEER_STREAM_STARTED.Stream;
-            This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, Context);
+            QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+            RecvCtx->Peer = This;
+            This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
             This->State.ControlStreamOpen = true;
         } else {
             // TODO: kill connection; peer tried to start control stream before authenticating.
+            printf("Client tried to start stream while not yet authenticated (but this is authenticated callback?)\n");
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
@@ -915,8 +935,8 @@ QuicLanEngine::ServerAuthStreamCallback(
             SendBuffer->Buffer = Event->RECEIVE.Buffers[0].Buffer;
             Event->RECEIVE.TotalBufferLength = 0; // Tell MsQuic to not free the receive buffer yet.
             QUIC_SETTINGS Settings{};
-            Settings.PeerBidiStreamCount = BiDiStreamCount;
-            Settings.IsSet.PeerBidiStreamCount = true;
+            Settings.PeerUnidiStreamCount = UniDiStreamCount;
+            Settings.IsSet.PeerUnidiStreamCount = true;
 
             This->Engine->MsQuic->SetCallbackHandler(This->Connection, (void*)ServerAuthenticatedConnectionCallback, This);
             This->Engine->MsQuic->ConnectionSendResumptionTicket(This->Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
@@ -987,7 +1007,7 @@ QuicLanEngine::ClientAuthStreamCallback(
             }
             // TODO: Indicate to VPN that the last connection has closed, if this is the last.
         } else {
-            This->State.Authenticated;
+            This->State.Authenticated = true;
 
             QuicLanTunnelEvent TunnelEvent{};
             if (This->Mtu < This->Engine->MaxDatagramLength) {
@@ -1035,7 +1055,7 @@ QuicLanEngine::SendControlStreamCallback(
             ((QuicLanPeerContext*)Context)->Engine->MsQuic->StreamClose(Stream);
             break;
         default:
-            printf("[Strm] %p Received Event %d, unhandled\n", Stream, Event->Type);
+            //printf("[Strm] %p Received Event %d, unhandled\n", Stream, Event->Type);
             break;
     }
     return QUIC_STATUS_SUCCESS;
@@ -1142,7 +1162,7 @@ QuicLanEngine::ReceiveControlStreamCallback(
             break;
         }
         default:
-            printf("[Strm] %p Received Event %d, unhandled\n", Stream, Event->Type);
+            //printf("[Strm] %p Received Event %d, unhandled\n", Stream, Event->Type);
             break;
     }
     return QUIC_STATUS_SUCCESS;

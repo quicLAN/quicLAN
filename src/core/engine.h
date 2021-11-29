@@ -196,4 +196,6 @@ struct QuicLanEngine {
     uint16_t ID; // The low two bytes of the VPN IP address.
 
     bool ShuttingDown = false;
+    bool IdRequested = false;
+    bool IdAssigned = false;
 };
