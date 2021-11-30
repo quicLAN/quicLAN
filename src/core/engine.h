@@ -60,8 +60,6 @@ struct QuicLanEngine {
         _In_ HQUIC AuthStream,
         _In_ QuicLanPeerContext* PeerContext);
 
-    bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
-
     void
     IncrementOutstandingDatagrams();
 

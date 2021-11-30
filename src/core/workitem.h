@@ -8,6 +8,7 @@ enum QuicLanWorkItemType {
     ControlMessageReceived,
     ControlMessageSend,
     RemovePeer,
+    AddPeer
 };
 
 struct QuicLanWorkItem {
@@ -18,6 +19,9 @@ struct QuicLanWorkItem {
             QUIC_STATUS ShutdownError;
             uint8_t ShutdownPeer : 1;
         } RemovePeer;
+        struct {
+            QuicLanPeerContext* Peer;
+        } AddPeer;
         struct {
             QuicLanPeerContext* Peer;
             union {

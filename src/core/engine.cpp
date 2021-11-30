@@ -224,6 +224,13 @@ QuicLanEngine::WorkerThreadProc()
                         }
                         break;
                     }
+
+                    case AddPeer: {
+                        Peers.push_back(WorkItem.AddPeer.Peer);
+                        WorkItem.AddPeer.Peer->Inserted = true;
+                        break;
+                    }
+
                     default:
                         printf("Unimplemented WorkItem type %d\n", WorkItem.Type);
                         break;
@@ -372,7 +379,7 @@ QuicLanEngine::StartClient()
         printf("Failed to start connection 0x%x\n", Status);
         goto Error;
     }
-    if (!AddPeer(Peer)) {
+    if (!QueueWorkItem({.Type = AddPeer, .AddPeer = {Peer}})) {
         goto Error;
     }
     Peer = nullptr;
@@ -645,7 +652,7 @@ QuicLanEngine::ServerListenerCallback(
         PeerContext->Connection = Event->NEW_CONNECTION.Connection;
         PeerContext->Server = true;
         PeerContext->Engine = This;
-        if (This->AddPeer(PeerContext)) {
+        if (This->QueueWorkItem({.Type = AddPeer, .AddPeer = {PeerContext}})) {
             This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerUnauthenticatedConnectionCallback, PeerContext);
         } else {
             delete PeerContext;
@@ -695,7 +702,10 @@ QuicLanEngine::ClientConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
         if (!This->State.Authenticated && (Event->STREAMS_AVAILABLE.BidirectionalCount + Event->STREAMS_AVAILABLE.UnidirectionalCount > 0)) {
-            printf("Client allowed streams before server authenticated!\n");
+            printf(
+                "Client allowed %u BiDi and %u Unidi streams before server authenticated!\n",
+                Event->STREAMS_AVAILABLE.BidirectionalCount,
+                Event->STREAMS_AVAILABLE.UnidirectionalCount);
         }
         if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
             // Start client by requesting IP address.
@@ -1040,7 +1050,7 @@ QuicLanEngine::SendControlStreamCallback(
 {
     switch (Event->Type) {
         case QUIC_STREAM_EVENT_START_COMPLETE:
-            printf("[Strm] 0x%p started with %d\n", Stream, Event->START_COMPLETE.Status);
+            printf("[Strm] %p started with %d\n", Stream, Event->START_COMPLETE.Status);
             if (QUIC_FAILED(Event->START_COMPLETE.Status)) {
                 printf("Failed to start control stream! %u\n", Event->START_COMPLETE.Status);
                 // TODO: shutdown the connection.
