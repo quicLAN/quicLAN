@@ -15,6 +15,8 @@ struct QuicLanWorkItem {
     union {
         struct {
             QuicLanPeerContext* Peer;
+            QUIC_STATUS ShutdownError;
+            uint8_t ShutdownPeer : 1;
         } RemovePeer;
         struct {
             QuicLanPeerContext* Peer;
@@ -23,7 +25,7 @@ struct QuicLanWorkItem {
                 QuicLanMessage* SendData;
             };
             uint16_t HostId;
-            uint8_t Type;
+            QuicLanMessageType Type;
         } ControlMessage;
     };
 };

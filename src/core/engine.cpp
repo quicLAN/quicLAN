@@ -159,12 +159,7 @@ QuicLanEngine::WorkerThreadProc()
 
                                 memcpy(Payload, &newId, sizeof(newId));
 
-                                QuicLanWorkItem WorkItem;
-                                WorkItem.Type = ControlMessageSend;
-                                WorkItem.ControlMessage.Peer = Peer;
-                                WorkItem.ControlMessage.SendData = Message;
-                                WorkItem.ControlMessage.Type = AssignId;
-                                QueueWorkItem(WorkItem);
+                                QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = AssignId}});
                             } else {
                                 printf("Client received RequestId message!\n");
                                 // TODO: kill connection.
@@ -178,7 +173,7 @@ QuicLanEngine::WorkerThreadProc()
                                     printf("Client received invalid AssignId message. Length: %u vs. %u\n",
                                     WorkItem.ControlMessage.RecvData.Length,
                                     sizeof(uint16_t));
-                                    continue;
+                                    break;
                                 }
                                 // ID is in network-order.
                                 memcpy(&ID, RecvData.Buffer, sizeof(uint16_t));
@@ -204,6 +199,29 @@ QuicLanEngine::WorkerThreadProc()
                             break;
                         }
 
+                        if (WorkItem.ControlMessage.RecvData.Length > 0) {
+                            delete[] WorkItem.ControlMessage.RecvData.Buffer;
+                        }
+
+                        break;
+                    }
+
+                    case RemovePeer: {
+                        auto Peer = WorkItem.RemovePeer.Peer;
+                        auto it = Peers.begin();
+                        while(*it != Peer) it++;
+                        if (it != Peers.end()) {
+                            Peers.erase(it);
+                            Peer->Inserted = false;
+                        }
+                        if (WorkItem.RemovePeer.ShutdownPeer) {
+                            MsQuic->ConnectionShutdown(Peer->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, WorkItem.RemovePeer.ShutdownError);
+                        }
+                        if (Peers.size() == 0) {
+                            QuicLanTunnelEvent Event;
+                            Event.Type = TunnelDisconnected;
+                            EventHandler(&Event);
+                        }
                         break;
                     }
                     default:
@@ -269,8 +287,7 @@ QuicLanEngine::~QuicLanEngine() {
         MsQuicClose(MsQuic);
     }
     // Poke worker thread to exit.
-    QuicLanWorkItem WorkItem{};
-    QueueWorkItem(WorkItem);
+    QueueWorkItem({});
     WorkerThread.join();
 };
 
@@ -590,7 +607,7 @@ QuicLanEngine::Stop()
 
 bool
 QuicLanEngine::QueueWorkItem(
-    _In_ QuicLanWorkItem& WorkItem)
+    _In_ const QuicLanWorkItem& WorkItem)
 {
     std::unique_lock<std::mutex> Lock(WorkItemsLock);
     WorkItems.emplace_back(WorkItem);
@@ -661,12 +678,12 @@ QuicLanEngine::ClientConnectionCallback(
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         printf("[conn][%p] Shutdown by peer, 0x%x\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         printf("[conn][%p] Shutdown by peer, 0x%llx\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
@@ -765,12 +782,12 @@ QuicLanEngine::ServerUnauthenticatedConnectionCallback(
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         printf("[conn][%p] Shutdown by transport, 0x%x\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         printf("[conn][%p] Shutdown by peer, 0x%llx\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
@@ -811,12 +828,12 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         printf("[conn][%p] Shutdown by transport, 0x%x\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         printf("[conn][%p] Shutdown by peer, 0x%llx\n",
             Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
-        This->Engine->RemovePeer(This);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         printf("[conn][%p] Complete\n", Connection);
@@ -910,10 +927,8 @@ QuicLanEngine::ServerAuthStreamCallback(
                 AuthBlock->Pw,
                 This->Engine->Password);
             This->State.AuthenticationFailed = true;
-            if (This->Engine->RemovePeer(This)) {
-                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
-                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
-            }
+            This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
+            This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_CONNECTION_REFUSED, true}});
         } else {
             // Client-provided password matches! Send our password in response and allow client to open control stream.
             This->State.Authenticated = true;
@@ -988,11 +1003,8 @@ QuicLanEngine::ClientAuthStreamCallback(
                 AuthBlock->Pw,
                 This->Engine->Password);
             This->State.AuthenticationFailed = true;
-            if (This->Engine->RemovePeer(This)) {
-                This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
-                This->Engine->MsQuic->ConnectionShutdown(This->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
-            }
-            // TODO: Indicate to VPN that the last connection has closed, if this is the last.
+            This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
+            This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_CONNECTION_REFUSED, true}});
         } else {
             This->State.Authenticated = true;
 
@@ -1085,6 +1097,11 @@ QuicLanEngine::ReceiveControlStreamCallback(
                     }
                     if (Length > 0) {
                         RecvCtx->Data.Buffer = new(std::nothrow) uint8_t[Length];
+                        if (RecvCtx->Data.Buffer == nullptr) {
+                            printf("Failed to allocate receive buffer for %u!\n", Length);
+                            RecvCtx->Peer->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, QUIC_STATUS_OUT_OF_MEMORY);
+                            break;
+                        }
                         RecvCtx->Data.Length = Length;
                         auto CopyLength = (Length > (Event->RECEIVE.Buffers[1].Length - Remainder)) ? (Event->RECEIVE.Buffers[1].Length - Remainder) : Length;
                         memcpy(RecvCtx->Data.Buffer, Event->RECEIVE.Buffers[1].Buffer + Remainder, CopyLength);
@@ -1099,6 +1116,11 @@ QuicLanEngine::ReceiveControlStreamCallback(
                     }
                     if (Length > 0) {
                         RecvCtx->Data.Buffer = new(std::nothrow) uint8_t[Length];
+                        if (RecvCtx->Data.Buffer == nullptr) {
+                            printf("Failed to allocate receive buffer for %u!\n", Length);
+                            RecvCtx->Peer->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, QUIC_STATUS_OUT_OF_MEMORY);
+                            break;
+                        }
                         RecvCtx->Data.Length = Length;
                         for (auto i = 0; i < Event->RECEIVE.BufferCount; ++i) {
                             auto CopyLength = (Length > (Event->RECEIVE.Buffers[i].Length - Offset)) ? (Event->RECEIVE.Buffers[i].Length - Offset) : Length;
@@ -1128,13 +1150,13 @@ QuicLanEngine::ReceiveControlStreamCallback(
                         Event->RECEIVE.AbsoluteOffset,
                         Event->RECEIVE.TotalBufferLength);
                 }
-                QuicLanWorkItem WorkItem;
-                WorkItem.Type = ControlMessageReceived;
-                WorkItem.ControlMessage.Type = RecvCtx->Type;
-                WorkItem.ControlMessage.Peer = RecvCtx->Peer;
-                WorkItem.ControlMessage.RecvData = RecvCtx->Data;
+                RecvCtx->Peer->Engine->QueueWorkItem({
+                    .Type = ControlMessageReceived,
+                    .ControlMessage = {
+                        .Peer = RecvCtx->Peer,
+                        .RecvData = RecvCtx->Data,
+                        .Type = RecvCtx->Type}});
                 RecvCtx->Data = {0, nullptr};
-                RecvCtx->Peer->Engine->QueueWorkItem(WorkItem);
             }
             break;
         case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {

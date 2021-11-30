@@ -61,7 +61,6 @@ struct QuicLanEngine {
         _In_ QuicLanPeerContext* PeerContext);
 
     bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
-    bool RemovePeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; auto it = Peers.begin(); while(*it != Peer) it++; if (it != Peers.end()) Peers.erase(it); Peer->Inserted = false; return true;}
 
     void
     IncrementOutstandingDatagrams();
@@ -86,7 +85,7 @@ struct QuicLanEngine {
 
     bool
     QueueWorkItem(
-        _In_ QuicLanWorkItem& WorkItem);
+        _In_ const QuicLanWorkItem& WorkItem);
 
     static
     _Function_class_(QUIC_LISTENER_CALLBACK)
