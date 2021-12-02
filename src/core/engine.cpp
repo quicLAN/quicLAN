@@ -139,13 +139,15 @@ QuicLanEngine::WorkerThreadProc()
                                     if (newId == ID) {
                                         continue;
                                     }
-                                    {
-                                        std::shared_lock Lock(PeersLock);
-                                        for (auto Peer : Peers) {
-                                            if (Peer->ID == newId) {
-                                                continue;
-                                            }
+                                    bool DuplicateId = false;
+                                    for (auto Peer : Peers) {
+                                        if (Peer->ID == newId) {
+                                            DuplicateId = true;
+                                            break;
                                         }
+                                    }
+                                    if (DuplicateId) {
+                                        continue;
                                     }
                                     Generate = false;
                                 } while (Generate);
@@ -206,6 +208,37 @@ QuicLanEngine::WorkerThreadProc()
                         break;
                     }
 
+                    case MtuChanged: {
+                        if (WorkItem.MtuChanged.Peer != nullptr) {
+                            WorkItem.MtuChanged.Peer->Mtu = WorkItem.MtuChanged.NewMtu;
+                        }
+                        uint16_t MinMtu = 1500;
+                        for (auto& Peer : Peers) {
+                            if (Peer->Mtu < MinMtu && Peer->Mtu > 0) {
+                                MinMtu = Peer->Mtu;
+                            }
+                        }
+                        if (MinMtu != MaxDatagramLength) {
+                            MaxDatagramLength = MinMtu;
+                            // Inform the VPN that the MTU has changed.
+                            QuicLanTunnelEvent TunnelEvent;
+                            TunnelEvent.Type = TunnelMtuChanged;
+                            TunnelEvent.MtuChanged.Mtu = MaxDatagramLength;
+                            EventHandler(&TunnelEvent);
+                        }
+                        break;
+                    }
+
+                    case ReceivePacket: {
+                        QuicLanTunnelEvent TunnelEvent;
+                        TunnelEvent.Type = TunnelPacketReceived;
+                        TunnelEvent.PacketReceived.Packet = WorkItem.RecvPacket.Packet.Buffer;
+                        TunnelEvent.PacketReceived.PacketLength = WorkItem.RecvPacket.Packet.Length;
+                        EventHandler(&TunnelEvent);
+                        delete[] WorkItem.RecvPacket.Packet.Buffer; // TODO: return to lookaside list.
+                        break;
+                    }
+
                     case RemovePeer: {
                         auto Peer = WorkItem.RemovePeer.Peer;
                         auto it = Peers.begin();
@@ -228,6 +261,68 @@ QuicLanEngine::WorkerThreadProc()
                     case AddPeer: {
                         Peers.push_back(WorkItem.AddPeer.Peer);
                         WorkItem.AddPeer.Peer->Inserted = true;
+                        break;
+                    }
+
+                    case SendPacket: {
+                        QuicLanPeerContext* FoundPeer = nullptr;
+                        auto SendBuffer = WorkItem.SendPacket.Packet;
+                        struct ip* Ip4Header = nullptr;
+                        struct ip6_hdr* Ip6Header = nullptr;
+                        if ((SendBuffer->Buffer[0] & 0xF0) >> 4 == 4) {
+                            Ip4Header = (struct ip*) SendBuffer->Buffer;
+                            for (auto Peer : Peers) {
+                                if (memcmp(&Peer->InternalAddress4.Ipv4.sin_addr, &Ip4Header->ip_dst, sizeof(in_addr)) == 0) {
+                                    FoundPeer = Peer;
+                                    break;
+                                }
+                            }
+                        } else {
+                            assert((SendBuffer->Buffer[0] & 0xF0) >> 4 == 6);
+                            Ip6Header = (struct ip6_hdr*) SendBuffer->Buffer;
+                            for (auto Peer : Peers) {
+                                if (memcmp(&Peer->InternalAddress6.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
+                                    FoundPeer = Peer;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (FoundPeer != nullptr) {
+                            QUIC_STATUS Status =
+                                MsQuic->DatagramSend(
+                                    FoundPeer->Connection,
+                                    SendBuffer,
+                                    1,
+                                    QUIC_SEND_FLAG_NONE,
+                                    SendBuffer);
+                            if (QUIC_FAILED(Status)) {
+                                printf("DatagramSend failed! %u\n", Status);
+                                delete SendBuffer;
+                            } else {
+                                IncrementOutstandingDatagrams();
+                            }
+                        } else {
+                            printf("Failed to find peer!\n");
+                            delete SendBuffer;
+                        }
+                        break;
+                    }
+
+                    case Shutdown: {
+                        MsQuic->ListenerStop(Listener);
+                        // TODO: Inform all peers of the disconnect
+                        ShuttingDown = true;
+                        for (auto Peer : Peers) {
+                            Peer->State.Disconnecting = true;
+                            Peer->Inserted = false;
+                            MsQuic->ConnectionShutdown(
+                                Peer->Connection,
+                                QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
+                                0);
+                        }
+                        Peers.clear();
+                        StopCv.notify_one();
                         break;
                     }
 
@@ -536,80 +631,16 @@ bool
 QuicLanEngine::Send(
     _In_ QuicLanPacket* SendBuffer)
 {
-    QuicLanPeerContext* FoundPeer = nullptr;
-    {
-        std::shared_lock ListLock(PeersLock);
-        if (ShuttingDown) {
-            goto Error;
-        }
-        struct ip* Ip4Header = nullptr;
-        struct ip6_hdr* Ip6Header = nullptr;
-        if ((SendBuffer->Buffer[0] & 0xF0) >> 4 == 4) {
-            Ip4Header = (struct ip*) SendBuffer->Buffer;
-            for (auto Peer : Peers) {
-                if (memcmp(&Peer->InternalAddress4.Ipv4.sin_addr, &Ip4Header->ip_dst, sizeof(in_addr)) == 0) {
-                    FoundPeer = Peer;
-                    Peer->Lock.lock_shared();
-                    break;
-                }
-            }
-        } else {
-            assert((SendBuffer->Buffer[0] & 0xF0) >> 4 == 6);
-            Ip6Header = (struct ip6_hdr*) SendBuffer->Buffer;
-            for (auto Peer : Peers) {
-                if (memcmp(&Peer->InternalAddress4.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
-                    FoundPeer = Peer;
-                    Peer->Lock.lock_shared();
-                    break;
-                }
-            }
-        }
-    }
-
-    if (FoundPeer != nullptr) {
-        QUIC_STATUS Status =
-            MsQuic->DatagramSend(
-                FoundPeer->Connection,
-                SendBuffer,
-                1,
-                QUIC_SEND_FLAG_NONE,
-                SendBuffer);
-        FoundPeer->Lock.unlock_shared();
-        if (QUIC_FAILED(Status)) {
-            printf("DatagramSend failed! %u\n", Status);
-            goto Error;
-        } else {
-            IncrementOutstandingDatagrams();
-            return true;
-        }
-    } else {
-        printf("Failed to find peer!\n");
-Error:
-        delete SendBuffer;
-        return false;
-    }
+    return QueueWorkItem({.Type = SendPacket, .SendPacket = {.Packet = SendBuffer}});
 }
 
 bool
 QuicLanEngine::Stop()
 {
-    MsQuic->ListenerStop(Listener);
-    // TODO: Inform all peers of the disconnect
-
-    {
-        std::shared_lock Lock(PeersLock);
-        ShuttingDown = true;
-        for (auto Peer : Peers) {
-            std::unique_lock PeerLock(Peer->Lock);
-            Peer->State.Disconnecting = true;
-            MsQuic->ConnectionShutdown(
-                Peer->Connection,
-                QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
-                0);
-        }
-    }
-
-    return true;
+    bool result = QueueWorkItem({.Type = Shutdown});
+    std::unique_lock Lock(StopLock);
+    StopCv.wait(Lock);
+    return result;
 }
 
 bool
@@ -647,12 +678,12 @@ QuicLanEngine::ServerListenerCallback(
             return Status;
         }
         // TODO: find if the peer exists already (from an announcement) and use that context
-        QuicLanPeerContext* PeerContext = new QuicLanPeerContext;
+        QuicLanPeerContext* PeerContext = new QuicLanPeerContext{};
         PeerContext->ExternalAddress = *Event->NEW_CONNECTION.Info->RemoteAddress;
         PeerContext->Connection = Event->NEW_CONNECTION.Connection;
         PeerContext->Server = true;
         PeerContext->Engine = This;
-        if (This->QueueWorkItem({.Type = AddPeer, .AddPeer = {PeerContext}})) {
+        if (This->QueueWorkItem({.Type = AddPeer, .AddPeer = {PeerContext}})) { // TODO: Wait to add peer until connection/authentication succeeds.
             This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerUnauthenticatedConnectionCallback, PeerContext);
         } else {
             delete PeerContext;
@@ -732,19 +763,26 @@ QuicLanEngine::ClientConnectionCallback(
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
         // Take the datagram and send it over loopback to the VPN interface.
         // TODO: Check flags and if FIN flag set, close connection?
-        TunnelEvent.Type = TunnelPacketReceived;
-        TunnelEvent.PacketReceived.Packet = Event->DATAGRAM_RECEIVED.Buffer->Buffer;
-        TunnelEvent.PacketReceived.PacketLength = Event->DATAGRAM_RECEIVED.Buffer->Length;
-        This->Engine->EventHandler(&TunnelEvent); // TODO: Move this to a thread to not block QUIC.
+        QuicLanWorkItem WorkItem;
+        WorkItem.Type = ReceivePacket;
+        WorkItem.RecvPacket.Packet.Buffer = new(std::nothrow) uint8_t[Event->DATAGRAM_RECEIVED.Buffer->Length];
+        if (WorkItem.RecvPacket.Packet.Buffer == nullptr) {
+            printf("Failed to allocate %u bytes for received packet!\n", Event->DATAGRAM_RECEIVED.Buffer->Length);
+            break;
+        }
+        WorkItem.RecvPacket.Packet.Length = Event->DATAGRAM_RECEIVED.Buffer->Length;
+        memcpy(WorkItem.RecvPacket.Packet.Buffer, Event->DATAGRAM_RECEIVED.Buffer->Buffer, WorkItem.RecvPacket.Packet.Length);
+        This->Engine->QueueWorkItem(WorkItem);
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
         if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
             This->Mtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
-            // TODO: queue workitem to recalculate the MTU
+            This->Engine->QueueWorkItem({.Type = MtuChanged});
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
-        if (Event->DATAGRAM_SEND_STATE_CHANGED.State == QUIC_DATAGRAM_SEND_SENT) {
+        if (Event->DATAGRAM_SEND_STATE_CHANGED.State == QUIC_DATAGRAM_SEND_SENT ||
+            Event->DATAGRAM_SEND_STATE_CHANGED.State == QUIC_DATAGRAM_SEND_CANCELED) {
             This->Engine->DecrementOutstandingDatagrams();
             uint8_t* Buffer = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
             Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
@@ -854,7 +892,7 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
         }
         break;
     case QUIC_CONNECTION_EVENT_PEER_ADDRESS_CHANGED:
-        This->ExternalAddress = *Event->PEER_ADDRESS_CHANGED.Address;
+        This->ExternalAddress = *Event->PEER_ADDRESS_CHANGED.Address; // TODO move this to worker thread.
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         if (This->State.Authenticated) {
@@ -871,22 +909,21 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
         /// the VPN interface.
         // If not destined for this server, forward to the correct peer.
         // TODO: Check flags and if FIN flag set, close connection?
-        TunnelEvent.Type = TunnelPacketReceived;
-        TunnelEvent.PacketReceived.Packet = Event->DATAGRAM_RECEIVED.Buffer->Buffer;
-        TunnelEvent.PacketReceived.PacketLength = Event->DATAGRAM_RECEIVED.Buffer->Length;
-        This->Engine->EventHandler(&TunnelEvent); // TODO: Move this to a thread to not block QUIC.
+        QuicLanWorkItem WorkItem;
+        WorkItem.Type = ReceivePacket;
+        WorkItem.RecvPacket.Packet.Buffer = new(std::nothrow) uint8_t[Event->DATAGRAM_RECEIVED.Buffer->Length];
+        if (WorkItem.RecvPacket.Packet.Buffer == nullptr) {
+            printf("Failed to allocate %u bytes for received packet!\n", Event->DATAGRAM_RECEIVED.Buffer->Length);
+            break;
+        }
+        WorkItem.RecvPacket.Packet.Length = Event->DATAGRAM_RECEIVED.Buffer->Length;
+        memcpy(WorkItem.RecvPacket.Packet.Buffer, Event->DATAGRAM_RECEIVED.Buffer->Buffer, WorkItem.RecvPacket.Packet.Length);
+        This->Engine->QueueWorkItem(WorkItem);
         break;
 
     case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
-        if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
-            This->Mtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
-            if (This->Mtu < This->Engine->MaxDatagramLength) {
-                This->Engine->MaxDatagramLength = This->Mtu;
-                // Inform the VPN that the MTU has changed.
-                TunnelEvent.Type = TunnelMtuChanged;
-                TunnelEvent.MtuChanged.Mtu = This->Mtu;
-                This->Engine->EventHandler(&TunnelEvent);
-            }
+        if (Event->DATAGRAM_STATE_CHANGED.SendEnabled && This->Mtu != Event->DATAGRAM_STATE_CHANGED.MaxSendLength) {
+            This->Engine->QueueWorkItem({.Type = MtuChanged, .MtuChanged = {.Peer = This, .NewMtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength}});
         }
         break;
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED:
@@ -895,7 +932,7 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
             This->Engine->DecrementOutstandingDatagrams();
             uint8_t* Buffer = (uint8_t*) Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext;
             Event->DATAGRAM_SEND_STATE_CHANGED.ClientContext = nullptr;
-            delete [] Buffer;
+            delete [] Buffer; // TODO: add buffer to lookaside list
         }
         break;
     default:
@@ -964,11 +1001,7 @@ QuicLanEngine::ServerAuthStreamCallback(
             // Now the client is authenticated and allowed to change MTU for the
             // entire tunnel.
             if (This->Mtu < This->Engine->MaxDatagramLength) {
-                This->Engine->MaxDatagramLength = This->Mtu;
-                // Inform the VPN that the MTU has changed.
-                TunnelEvent.Type = TunnelMtuChanged;
-                TunnelEvent.MtuChanged.Mtu = This->Mtu;
-                This->Engine->EventHandler(&TunnelEvent);
+                This->Engine->QueueWorkItem({.Type = MtuChanged});
             }
             return QUIC_STATUS_PENDING; // Tell MsQuic to not free the receive buffer yet.
         }
@@ -1020,10 +1053,7 @@ QuicLanEngine::ClientAuthStreamCallback(
 
             QuicLanTunnelEvent TunnelEvent{};
             if (This->Mtu < This->Engine->MaxDatagramLength) {
-                This->Engine->MaxDatagramLength = This->Mtu;
-                TunnelEvent.Type = TunnelMtuChanged;
-                TunnelEvent.MtuChanged.Mtu = This->Mtu;
-                This->Engine->EventHandler(&TunnelEvent);
+                This->Engine->QueueWorkItem({.Type = MtuChanged});
             }
         }
         break;

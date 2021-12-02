@@ -14,7 +14,6 @@ struct QuicLanPeerContext {
     QUIC_ADDR ExternalAddress;
     QUIC_ADDR InternalAddress4; // TODO: Save client address here when they announce it.
     QUIC_ADDR InternalAddress6; // Ditto.
-    std::shared_mutex Lock; // Lock to protect this from modification while being used.
     struct {
         uint32_t AddressReserved : 1;
         uint32_t Connected : 1;
@@ -185,7 +184,10 @@ struct QuicLanEngine {
     std::condition_variable DatagramsOutstandingCv;
     uint16_t DatagramsOutstanding = 0;
 
-    uint16_t MaxDatagramLength = 1500; // TODO: calculate this as the min() of all connections' MTUs.
+    std::mutex StopLock;
+    std::condition_variable StopCv;
+
+    uint16_t MaxDatagramLength = 1500; // Calculated as the min() of all connections' MTUs.
 
     uint16_t ID; // The low two bytes of the VPN IP address.
 
