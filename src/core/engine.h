@@ -2,6 +2,7 @@
     Licensed under the MIT License.
 */
 
+const uint16_t MaxPacketLength = 1500;
 
 struct QuicLanAuthBlock{
     uint8_t Len;
@@ -54,7 +55,7 @@ struct QuicLanEngine {
     StartServer(
         _In_ uint16_t ListenerPort);
 
-    void
+    bool
     ClientAuthenticationStart(
         _In_ HQUIC AuthStream,
         _In_ QuicLanPeerContext* PeerContext);

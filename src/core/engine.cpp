@@ -27,7 +27,6 @@ const uint32_t KeepAliveMs = 5000;
 const uint16_t BiDiStreamCount = 1;
 const uint16_t UniDiStreamCount = 1;
 
-const uint16_t MaxPacketLength = 1500;
 const uint32_t WorkItemBatchSize = 10;
 const uint32_t MaxDatagramsOutstanding = 50;
 
@@ -107,6 +106,10 @@ QuicLanEngine::WorkerThreadProc()
                             ConvertIdToAddress(newId, Peer->InternalAddress4, Peer->InternalAddress6);
 
                             QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
+                            if (Message == nullptr) {
+                                QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                                break;
+                            }
 
                             uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, ID, sizeof(uint16_t), Message->Buffer);
 
@@ -163,6 +166,10 @@ QuicLanEngine::WorkerThreadProc()
                     switch (WorkItem.ControlMessage.Type) {
                     case RequestId: {
                         QuicLanMessage* Message = QuicLanMessageAlloc(0);
+                        if (Message == nullptr) {
+                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessage.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                            break;
+                        }
                         QuicLanMessageHeaderFormat(RequestId, ID, 0, Message->Buffer);
 
                         HQUIC Stream = nullptr;
@@ -455,7 +462,12 @@ QuicLanEngine::StartClient()
         goto Error;
     }
 
-    Peer = new QuicLanPeerContext{};
+    Peer = new(std::nothrow) QuicLanPeerContext{};
+    if (Peer == nullptr) {
+        Status = QUIC_STATUS_OUT_OF_MEMORY;
+        printf("Failed to allocate peer context!\n");
+        goto Error;
+    }
     Peer->Engine = this;
     Peer->FirstConnection = true;
     // TODO: Hacks for development. Remove when implementing address announcements
@@ -583,7 +595,7 @@ QuicLanEngine::StartServer(
     return QUIC_SUCCEEDED(Status);
 }
 
-void
+bool
 QuicLanEngine::ClientAuthenticationStart(
     _In_ HQUIC AuthStream,
     _In_ QuicLanPeerContext* PeerContext)
@@ -591,7 +603,11 @@ QuicLanEngine::ClientAuthenticationStart(
     MsQuic->SetCallbackHandler(AuthStream, (void*)QuicLanEngine::ClientAuthStreamCallback, PeerContext);
 
     uint32_t PasswordLen = strnlen(Password, sizeof(Password));
-    QUIC_BUFFER* SendBuffer = (QUIC_BUFFER*) new uint8_t[sizeof(QUIC_BUFFER) + PasswordLen + 1];
+    QUIC_BUFFER* SendBuffer = (QUIC_BUFFER*) new(std::nothrow) uint8_t[sizeof(QUIC_BUFFER) + PasswordLen + 1];
+    if (SendBuffer == nullptr) {
+        printf("Failed to allocate %u for authentication buffer!\n", sizeof(QUIC_BUFFER) + PasswordLen + 1);
+        return false;
+    }
     QuicLanAuthBlock* AuthBlock = (QuicLanAuthBlock*) (SendBuffer + 1);
     strncpy(AuthBlock->Pw, Password, PasswordLen);
     AuthBlock->Len = (uint8_t) PasswordLen;
@@ -599,9 +615,10 @@ QuicLanEngine::ClientAuthenticationStart(
     SendBuffer->Buffer = (uint8_t*) AuthBlock;
     if (QUIC_FAILED(MsQuic->StreamSend(AuthStream, SendBuffer, 1, QUIC_SEND_FLAG_FIN, SendBuffer))) {
         printf("Client failed to send authentication block!\n");
-        // TODO: tear down connection
+        return false;
     }
     PeerContext->State.Authenticating = true;
+    return true;
 }
 
 void
@@ -629,7 +646,11 @@ QuicLanEngine::GetPacket()
     }
     Lock.unlock(); // We don't need the lock anymore.
 
-    uint8_t* RawBuffer = new uint8_t[sizeof(QUIC_BUFFER) + MaxDatagramLength];
+    uint8_t* RawBuffer = new(std::nothrow) uint8_t[sizeof(QUIC_BUFFER) + MaxDatagramLength];
+    if (RawBuffer == nullptr) {
+        printf("Failed to allocate %u for VPN packet!\n", sizeof(QUIC_BUFFER) + MaxDatagramLength);
+        return nullptr;
+    }
     QUIC_BUFFER* Buffer = (QUIC_BUFFER*)RawBuffer;
     Buffer->Buffer = RawBuffer + sizeof(QUIC_BUFFER);
     Buffer->Length = MaxDatagramLength;
@@ -687,7 +708,11 @@ QuicLanEngine::ServerListenerCallback(
             return Status;
         }
         // TODO: find if the peer exists already (from an announcement) and use that context
-        QuicLanPeerContext* PeerContext = new QuicLanPeerContext{};
+        QuicLanPeerContext* PeerContext = new(std::nothrow) QuicLanPeerContext{};
+        if (PeerContext == nullptr) {
+            printf("Server failed to allocate peer context!\n");
+            return QUIC_STATUS_CONNECTION_REFUSED;
+        }
         PeerContext->ExternalAddress = *Event->NEW_CONNECTION.Info->RemoteAddress;
         PeerContext->Connection = Event->NEW_CONNECTION.Connection;
         PeerContext->Server = true;
@@ -758,9 +783,16 @@ QuicLanEngine::ClientConnectionCallback(
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
         if (!This->State.Authenticated && !This->State.Authenticating) {
-            This->Engine->ClientAuthenticationStart(Event->PEER_STREAM_STARTED.Stream, This);
+            if (!This->Engine->ClientAuthenticationStart(Event->PEER_STREAM_STARTED.Stream, This)) {
+                This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_INTERNAL_ERROR, true}});
+            }
         } else if (This->State.Authenticated) {
             QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+            if (RecvCtx == nullptr) {
+                printf("Failed to allocate ControlStreamReceiveContext!\n");
+                This->Engine->MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
+                break;
+            }
             RecvCtx->Peer = This;
             This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
         } else {
@@ -906,6 +938,11 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
         if (This->State.Authenticated) {
             QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+            if (RecvCtx == nullptr) {
+                printf("Failed to allocate ControlStreamReceiveContext!\n");
+                This->Engine->MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
+                break;
+            }
             RecvCtx->Peer = This;
             This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
         } else {
@@ -988,7 +1025,12 @@ QuicLanEngine::ServerAuthStreamCallback(
         } else {
             // Client-provided password matches! Send our password in response and allow client to open control stream.
             This->State.Authenticated = true;
-            QUIC_BUFFER* SendBuffer = new QUIC_BUFFER;
+            QUIC_BUFFER* SendBuffer = new(std::nothrow) QUIC_BUFFER;
+            if (SendBuffer == nullptr) {
+                printf("Server failed to allocate auth send buffer!\n");
+                This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_INTERNAL_ERROR, true}});
+                break;
+            }
             SendBuffer->Length = Event->RECEIVE.Buffers[0].Length;
             SendBuffer->Buffer = Event->RECEIVE.Buffers[0].Buffer;
             Event->RECEIVE.TotalBufferLength = 0; // Tell MsQuic to not free the receive buffer yet.
