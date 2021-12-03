@@ -27,6 +27,7 @@ const uint32_t KeepAliveMs = 5000;
 const uint16_t BiDiStreamCount = 1;
 const uint16_t UniDiStreamCount = 1;
 
+const uint32_t WorkItemBatchSize = 10;
 const uint32_t MaxDatagramsOutstanding = 50;
 
 void
@@ -54,8 +55,10 @@ QuicLanEngine::WorkerThreadProc()
             if (ShuttingDown) {
                 return;
             }
-            std::list<QuicLanWorkItem> Batch;
-            Batch.swap(WorkItems);
+            std::list<QuicLanWorkItem> Batch{};
+            auto SpliceEnd = WorkItems.begin();
+            for(auto i = 0; SpliceEnd != WorkItems.end() && i < WorkItemBatchSize; ++i, ++SpliceEnd);
+            Batch.splice(Batch.end(), WorkItems, WorkItems.begin(), SpliceEnd);
             lock.unlock();
 
             for (auto& WorkItem : Batch) {
@@ -310,6 +313,7 @@ QuicLanEngine::WorkerThreadProc()
                     }
 
                     case Shutdown: {
+                        std::unique_lock Lock(StopLock);
                         MsQuic->ListenerStop(Listener);
                         // TODO: Inform all peers of the disconnect
                         ShuttingDown = true;
@@ -322,6 +326,7 @@ QuicLanEngine::WorkerThreadProc()
                                 0);
                         }
                         Peers.clear();
+                        StopLock.unlock();
                         StopCv.notify_one();
                         break;
                     }
