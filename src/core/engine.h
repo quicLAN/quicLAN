@@ -11,19 +11,15 @@ struct QuicLanAuthBlock{
 struct QuicLanPeerContext {
     QuicLanEngine* Engine;
     HQUIC Connection;
-    HQUIC ControlStream;
     QUIC_ADDR ExternalAddress;
     QUIC_ADDR InternalAddress4; // TODO: Save client address here when they announce it.
     QUIC_ADDR InternalAddress6; // Ditto.
-    std::shared_mutex Lock; // Lock to protect this from modification while being used.
     struct {
         uint32_t AddressReserved : 1;
         uint32_t Connected : 1;
         uint32_t Authenticating : 1;
         uint32_t AuthenticationFailed : 1;
         uint32_t Authenticated : 1;
-        uint32_t ControlStreamOpen : 1;
-        uint32_t ControlStreamClosed : 1;
         uint32_t TimedOut : 1;
         uint32_t Disconnecting : 1;
         uint32_t Disconnected : 1;
@@ -34,6 +30,14 @@ struct QuicLanPeerContext {
     QuicLanMessageType LastMessageSent;
     uint16_t Mtu;
     uint16_t ID; // The low two bytes of the VPN IP address.
+};
+
+struct QuicLanControlStreamReceiveContext {
+    QuicLanPeerContext* Peer;
+    QUIC_BUFFER Data;
+    uint32_t Offset;
+    uint16_t HostId;
+    QuicLanMessageType Type;
 };
 
 struct QuicLanEngine {
@@ -55,9 +59,6 @@ struct QuicLanEngine {
         _In_ HQUIC AuthStream,
         _In_ QuicLanPeerContext* PeerContext);
 
-    bool AddPeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; Peers.push_back(Peer); Peer->Inserted = true; return true;}
-    bool RemovePeer(_In_ QuicLanPeerContext* Peer) {std::unique_lock Lock(PeersLock); if (ShuttingDown) return false; auto it = Peers.begin(); while(*it != Peer) it++; if (it != Peers.end()) Peers.erase(it); Peer->Inserted = false; return true;}
-
     void
     IncrementOutstandingDatagrams();
 
@@ -75,6 +76,13 @@ struct QuicLanEngine {
     Stop();
 
     ~QuicLanEngine();
+
+    void
+    WorkerThreadProc();
+
+    bool
+    QueueWorkItem(
+        _In_ const QuicLanWorkItem& WorkItem);
 
     static
     _Function_class_(QUIC_LISTENER_CALLBACK)
@@ -134,11 +142,19 @@ struct QuicLanEngine {
     _Function_class_(QUIC_STREAM_CALLBACK)
     QUIC_STATUS
     QUIC_API
-    ControlStreamCallback(
+    SendControlStreamCallback(
         _In_ HQUIC Stream,
         _In_opt_ void* Context,
         _Inout_ QUIC_STREAM_EVENT* Event);
 
+    static
+    _Function_class_(QUIC_STREAM_CALLBACK)
+    QUIC_STATUS
+    QUIC_API
+    ReceiveControlStreamCallback(
+        _In_ HQUIC Stream,
+        _In_opt_ void* Context,
+        _Inout_ QUIC_STREAM_EVENT* Event);
 
     const QUIC_API_TABLE* MsQuic;
     HQUIC Registration;
@@ -156,6 +172,11 @@ struct QuicLanEngine {
     QUIC_ADDR Ip4VpnAddress;
     QUIC_ADDR Ip6VpnAddress;
 
+    std::thread WorkerThread;
+    std::list<QuicLanWorkItem> WorkItems;
+    std::mutex WorkItemsLock;
+    std::condition_variable WorkItemsCv;
+
     std::shared_mutex PeersLock;
     std::vector<QuicLanPeerContext*> Peers;
 
@@ -163,9 +184,14 @@ struct QuicLanEngine {
     std::condition_variable DatagramsOutstandingCv;
     uint16_t DatagramsOutstanding = 0;
 
-    uint16_t MaxDatagramLength = 1500; // TODO: calculate this as the min() of all connections' MTUs.
+    std::mutex StopLock;
+    std::condition_variable StopCv;
+
+    uint16_t MaxDatagramLength = MaxPacketLength; // Calculated as the min() of all connections' MTUs.
 
     uint16_t ID; // The low two bytes of the VPN IP address.
 
     bool ShuttingDown = false;
+    bool IdRequested = false;
+    bool IdAssigned = false;
 };
