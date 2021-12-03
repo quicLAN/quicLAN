@@ -187,7 +187,7 @@ struct QuicLanEngine {
     std::mutex StopLock;
     std::condition_variable StopCv;
 
-    uint16_t MaxDatagramLength = 1500; // Calculated as the min() of all connections' MTUs.
+    uint16_t MaxDatagramLength = MaxPacketLength; // Calculated as the min() of all connections' MTUs.
 
     uint16_t ID; // The low two bytes of the VPN IP address.
 

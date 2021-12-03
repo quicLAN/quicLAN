@@ -5,12 +5,12 @@ struct QuicLanPeerContext;
 
 enum QuicLanWorkItemType {
     Invalid = 0,
+    AddPeer,
     ControlMessageReceived,
     ControlMessageSend,
     MtuChanged,
-    RemovePeer,
-    AddPeer,
     ReceivePacket,
+    RemovePeer,
     SendPacket,
     Shutdown
 };

@@ -27,6 +27,7 @@ const uint32_t KeepAliveMs = 5000;
 const uint16_t BiDiStreamCount = 1;
 const uint16_t UniDiStreamCount = 1;
 
+const uint16_t MaxPacketLength = 1500;
 const uint32_t WorkItemBatchSize = 10;
 const uint32_t MaxDatagramsOutstanding = 50;
 
@@ -63,277 +64,279 @@ QuicLanEngine::WorkerThreadProc()
 
             for (auto& WorkItem : Batch) {
                 switch (WorkItem.Type) {
-                    case ControlMessageSend:
-                        switch (WorkItem.ControlMessage.Type) {
-                            case RequestId: {
-                                QuicLanMessage* Message = QuicLanMessageAlloc(0);
-                                QuicLanMessageHeaderFormat(RequestId, ID, 0, Message->Buffer);
+                case AddPeer: {
+                    Peers.push_back(WorkItem.AddPeer.Peer);
+                    WorkItem.AddPeer.Peer->Inserted = true;
+                    break;
+                }
 
-                                HQUIC Stream = nullptr;
-                                if (QUIC_FAILED(MsQuic->StreamOpen(
-                                        WorkItem.ControlMessage.Peer->Connection,
-                                        QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
-                                        SendControlStreamCallback,
-                                        WorkItem.ControlMessage.Peer,
-                                        &Stream)) ||
-                                    QUIC_FAILED(MsQuic->StreamSend(
-                                        Stream,
-                                        &Message->QuicBuffer, 1,
-                                        QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
-                                        Message))) {
-                                    printf("Client failed to send requestId message! \n");
-                                    QuicLanMessageFree(Message);
-                                    if (Stream != nullptr) {
-                                        MsQuic->StreamClose(Stream);
-                                    }
-                                } else {
-                                    // TODO: Create retry logic
-                                    IdRequested = true;
+                case ControlMessageReceived: {
+                    auto Peer = WorkItem.ControlMessage.Peer;
+                    auto& RecvData = WorkItem.ControlMessage.RecvData;
+                    switch (WorkItem.ControlMessage.Type)
+                    {
+                    case RequestId: {
+                        assert(RecvData.Length == 0);
+                        if (Peer->Server) {
+                            std::minstd_rand Rng;
+                            // TODO: support IPv6 external addresses.
+                            Rng.seed(Peer->ExternalAddress.Ipv4.sin_addr.s_addr);
+                            bool Generate = true;
+                            uint16_t newId = 0;
+                            do {
+                                // check if it's in the list of known peers, or equal to this id
+                                newId = (uint16_t) ((Rng() % 65023u) + 257u);
+                                newId = CxPlatByteSwapUint16(newId);
+                                if (newId == ID) {
+                                    continue;
                                 }
-                                break;
-                            }
-
-                            case AssignId: {
-                                auto Message = WorkItem.ControlMessage.SendData;
-                                auto Peer = WorkItem.ControlMessage.Peer;
-                                HQUIC Stream = nullptr;
-                                if (QUIC_FAILED(MsQuic->StreamOpen(
-                                        Peer->Connection,
-                                        QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
-                                        SendControlStreamCallback,
-                                        Peer,
-                                        &Stream)) ||
-                                    QUIC_FAILED(MsQuic->StreamSend(
-                                        Stream,
-                                        &Message->QuicBuffer, 1,
-                                        QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
-                                        Message))) {
-                                    printf("Server failed to send AssignId message to client.\n");
-                                    QuicLanMessageFree(Message);
-                                    if (Stream != nullptr) {
-                                        MsQuic->StreamClose(Stream);
+                                bool DuplicateId = false;
+                                for (auto Peer : Peers) {
+                                    if (Peer->ID == newId) {
+                                        DuplicateId = true;
+                                        break;
                                     }
                                 }
-                                break;
-                            }
-
-                            default:
-                                printf("Unimplemented ControlMessageSend type %d\n", WorkItem.ControlMessage.Type);
-                                break;
-                        }
-                        break;
-                    case ControlMessageReceived: {
-                        auto Peer = WorkItem.ControlMessage.Peer;
-                        auto& RecvData = WorkItem.ControlMessage.RecvData;
-                        switch (WorkItem.ControlMessage.Type)
-                        {
-                        case RequestId: {
-                            assert(RecvData.Length == 0);
-                            if (Peer->Server) {
-                                std::minstd_rand Rng;
-                                // TODO: support IPv6 external addresses.
-                                Rng.seed(Peer->ExternalAddress.Ipv4.sin_addr.s_addr);
-                                bool Generate = true;
-                                uint16_t newId = 0;
-                                do {
-                                    // check if it's in the list of known peers, or equal to this id
-                                    newId = (uint16_t) ((Rng() % 65023u) + 257u);
-                                    newId = CxPlatByteSwapUint16(newId);
-                                    if (newId == ID) {
-                                        continue;
-                                    }
-                                    bool DuplicateId = false;
-                                    for (auto Peer : Peers) {
-                                        if (Peer->ID == newId) {
-                                            DuplicateId = true;
-                                            break;
-                                        }
-                                    }
-                                    if (DuplicateId) {
-                                        continue;
-                                    }
-                                    Generate = false;
-                                } while (Generate);
-                                printf("Assigning %x ID to client\n", newId);
-                                Peer->ID = newId;
-                                ConvertIdToAddress(newId, Peer->InternalAddress4, Peer->InternalAddress6);
-
-                                QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
-
-                                uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, ID, sizeof(uint16_t), Message->Buffer);
-
-                                memcpy(Payload, &newId, sizeof(newId));
-
-                                QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = AssignId}});
-                            } else {
-                                printf("Client received RequestId message!\n");
-                                // TODO: kill connection.
-                            }
-                            break;
-                        }
-
-                        case AssignId:
-                            if (!Peer->Server) {
-                                if (WorkItem.ControlMessage.RecvData.Length != sizeof(uint16_t)) {
-                                    printf("Client received invalid AssignId message. Length: %u vs. %u\n",
-                                    WorkItem.ControlMessage.RecvData.Length,
-                                    sizeof(uint16_t));
-                                    break;
+                                if (DuplicateId) {
+                                    continue;
                                 }
-                                // ID is in network-order.
-                                memcpy(&ID, RecvData.Buffer, sizeof(uint16_t));
-                                ConvertIdToAddress(ID, Ip4VpnAddress, Ip6VpnAddress);
-                                IdAssigned = true;
-                                char Ip4TunnelAddress[INET_ADDRSTRLEN];
-                                char Ip6TunnelAddress[INET6_ADDRSTRLEN];
+                                Generate = false;
+                            } while (Generate);
+                            printf("Assigning %x ID to client\n", newId);
+                            Peer->ID = newId;
+                            ConvertIdToAddress(newId, Peer->InternalAddress4, Peer->InternalAddress6);
 
-                                QuicLanTunnelEvent TunnelEvent;
-                                TunnelEvent.IpAddressReady.IPv4Addr =
-                                    inet_ntop(AF_INET, &Ip4VpnAddress.Ipv4.sin_addr, Ip4TunnelAddress, sizeof(Ip4TunnelAddress));
-                                TunnelEvent.IpAddressReady.IPv6Addr =
-                                    inet_ntop(AF_INET6, &Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
-                                TunnelEvent.Type = TunnelIpAddressReady;
-                                EventHandler(&TunnelEvent);
-                            } else {
-                                printf("Server received AssignId message!\n");
-                                // TODO: Kill connection.
-                            }
-                            break;
+                            QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
 
-                        default:
-                            break;
+                            uint8_t* Payload = QuicLanMessageHeaderFormat(AssignId, ID, sizeof(uint16_t), Message->Buffer);
+
+                            memcpy(Payload, &newId, sizeof(newId));
+
+                            QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = AssignId}});
+                        } else {
+                            printf("Client received RequestId message!\n");
+                            // TODO: kill connection.
                         }
-
-                        if (WorkItem.ControlMessage.RecvData.Length > 0) {
-                            delete[] WorkItem.ControlMessage.RecvData.Buffer;
-                        }
-
                         break;
                     }
 
-                    case MtuChanged: {
-                        if (WorkItem.MtuChanged.Peer != nullptr) {
-                            WorkItem.MtuChanged.Peer->Mtu = WorkItem.MtuChanged.NewMtu;
-                        }
-                        uint16_t MinMtu = 1500;
-                        for (auto& Peer : Peers) {
-                            if (Peer->Mtu < MinMtu && Peer->Mtu > 0) {
-                                MinMtu = Peer->Mtu;
+                    case AssignId:
+                        if (!Peer->Server) {
+                            if (WorkItem.ControlMessage.RecvData.Length != sizeof(uint16_t)) {
+                                printf("Client received invalid AssignId message. Length: %u vs. %u\n",
+                                WorkItem.ControlMessage.RecvData.Length,
+                                sizeof(uint16_t));
+                                break;
                             }
-                        }
-                        if (MinMtu != MaxDatagramLength) {
-                            MaxDatagramLength = MinMtu;
-                            // Inform the VPN that the MTU has changed.
+                            // ID is in network-order.
+                            memcpy(&ID, RecvData.Buffer, sizeof(uint16_t));
+                            ConvertIdToAddress(ID, Ip4VpnAddress, Ip6VpnAddress);
+                            IdAssigned = true;
+                            char Ip4TunnelAddress[INET_ADDRSTRLEN];
+                            char Ip6TunnelAddress[INET6_ADDRSTRLEN];
+
                             QuicLanTunnelEvent TunnelEvent;
-                            TunnelEvent.Type = TunnelMtuChanged;
-                            TunnelEvent.MtuChanged.Mtu = MaxDatagramLength;
+                            TunnelEvent.IpAddressReady.IPv4Addr =
+                                inet_ntop(AF_INET, &Ip4VpnAddress.Ipv4.sin_addr, Ip4TunnelAddress, sizeof(Ip4TunnelAddress));
+                            TunnelEvent.IpAddressReady.IPv6Addr =
+                                inet_ntop(AF_INET6, &Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
+                            TunnelEvent.Type = TunnelIpAddressReady;
                             EventHandler(&TunnelEvent);
+                        } else {
+                            printf("Server received AssignId message!\n");
+                            // TODO: Kill connection.
                         }
+                        break;
+
+                    default:
                         break;
                     }
 
-                    case ReceivePacket: {
-                        QuicLanTunnelEvent TunnelEvent;
-                        TunnelEvent.Type = TunnelPacketReceived;
-                        TunnelEvent.PacketReceived.Packet = WorkItem.RecvPacket.Packet.Buffer;
-                        TunnelEvent.PacketReceived.PacketLength = WorkItem.RecvPacket.Packet.Length;
-                        EventHandler(&TunnelEvent);
-                        delete[] WorkItem.RecvPacket.Packet.Buffer; // TODO: return to lookaside list.
-                        break;
+                    if (WorkItem.ControlMessage.RecvData.Length > 0) {
+                        delete[] WorkItem.ControlMessage.RecvData.Buffer;
                     }
 
-                    case RemovePeer: {
-                        auto Peer = WorkItem.RemovePeer.Peer;
-                        auto it = Peers.begin();
-                        while(*it != Peer) it++;
-                        if (it != Peers.end()) {
-                            Peers.erase(it);
-                            Peer->Inserted = false;
-                        }
-                        if (WorkItem.RemovePeer.ShutdownPeer) {
-                            MsQuic->ConnectionShutdown(Peer->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, WorkItem.RemovePeer.ShutdownError);
-                        }
-                        if (Peers.size() == 0) {
-                            QuicLanTunnelEvent Event;
-                            Event.Type = TunnelDisconnected;
-                            EventHandler(&Event);
-                        }
-                        break;
-                    }
+                    break;
+                }
 
-                    case AddPeer: {
-                        Peers.push_back(WorkItem.AddPeer.Peer);
-                        WorkItem.AddPeer.Peer->Inserted = true;
-                        break;
-                    }
+                case ControlMessageSend: {
+                    switch (WorkItem.ControlMessage.Type) {
+                    case RequestId: {
+                        QuicLanMessage* Message = QuicLanMessageAlloc(0);
+                        QuicLanMessageHeaderFormat(RequestId, ID, 0, Message->Buffer);
 
-                    case SendPacket: {
-                        QuicLanPeerContext* FoundPeer = nullptr;
-                        auto SendBuffer = WorkItem.SendPacket.Packet;
-                        struct ip* Ip4Header = nullptr;
-                        struct ip6_hdr* Ip6Header = nullptr;
-                        if ((SendBuffer->Buffer[0] & 0xF0) >> 4 == 4) {
-                            Ip4Header = (struct ip*) SendBuffer->Buffer;
-                            for (auto Peer : Peers) {
-                                if (memcmp(&Peer->InternalAddress4.Ipv4.sin_addr, &Ip4Header->ip_dst, sizeof(in_addr)) == 0) {
-                                    FoundPeer = Peer;
-                                    break;
-                                }
+                        HQUIC Stream = nullptr;
+                        if (QUIC_FAILED(MsQuic->StreamOpen(
+                                WorkItem.ControlMessage.Peer->Connection,
+                                QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
+                                SendControlStreamCallback,
+                                WorkItem.ControlMessage.Peer,
+                                &Stream)) ||
+                            QUIC_FAILED(MsQuic->StreamSend(
+                                Stream,
+                                &Message->QuicBuffer, 1,
+                                QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
+                                Message))) {
+                            printf("Client failed to send requestId message! \n");
+                            QuicLanMessageFree(Message);
+                            if (Stream != nullptr) {
+                                MsQuic->StreamClose(Stream);
                             }
                         } else {
-                            assert((SendBuffer->Buffer[0] & 0xF0) >> 4 == 6);
-                            Ip6Header = (struct ip6_hdr*) SendBuffer->Buffer;
-                            for (auto Peer : Peers) {
-                                if (memcmp(&Peer->InternalAddress6.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
-                                    FoundPeer = Peer;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (FoundPeer != nullptr) {
-                            QUIC_STATUS Status =
-                                MsQuic->DatagramSend(
-                                    FoundPeer->Connection,
-                                    SendBuffer,
-                                    1,
-                                    QUIC_SEND_FLAG_NONE,
-                                    SendBuffer);
-                            if (QUIC_FAILED(Status)) {
-                                printf("DatagramSend failed! %u\n", Status);
-                                delete SendBuffer;
-                            } else {
-                                IncrementOutstandingDatagrams();
-                            }
-                        } else {
-                            printf("Failed to find peer!\n");
-                            delete SendBuffer;
+                            // TODO: Create retry logic
+                            IdRequested = true;
                         }
                         break;
                     }
 
-                    case Shutdown: {
-                        std::unique_lock Lock(StopLock);
-                        MsQuic->ListenerStop(Listener);
-                        // TODO: Inform all peers of the disconnect
-                        ShuttingDown = true;
-                        for (auto Peer : Peers) {
-                            Peer->State.Disconnecting = true;
-                            Peer->Inserted = false;
-                            MsQuic->ConnectionShutdown(
+                    case AssignId: {
+                        auto Message = WorkItem.ControlMessage.SendData;
+                        auto Peer = WorkItem.ControlMessage.Peer;
+                        HQUIC Stream = nullptr;
+                        if (QUIC_FAILED(MsQuic->StreamOpen(
                                 Peer->Connection,
-                                QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
-                                0);
+                                QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
+                                SendControlStreamCallback,
+                                Peer,
+                                &Stream)) ||
+                            QUIC_FAILED(MsQuic->StreamSend(
+                                Stream,
+                                &Message->QuicBuffer, 1,
+                                QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
+                                Message))) {
+                            printf("Server failed to send AssignId message to client.\n");
+                            QuicLanMessageFree(Message);
+                            if (Stream != nullptr) {
+                                MsQuic->StreamClose(Stream);
+                            }
                         }
-                        Peers.clear();
-                        StopLock.unlock();
-                        StopCv.notify_one();
                         break;
                     }
 
                     default:
-                        printf("Unimplemented WorkItem type %d\n", WorkItem.Type);
+                        printf("Unimplemented ControlMessageSend type %d\n", WorkItem.ControlMessage.Type);
                         break;
+                    }
+                    break;
+                }
+
+                case MtuChanged: {
+                    if (WorkItem.MtuChanged.Peer != nullptr) {
+                        WorkItem.MtuChanged.Peer->Mtu = WorkItem.MtuChanged.NewMtu;
+                    }
+                    uint16_t MinMtu = MaxPacketLength;
+                    for (auto& Peer : Peers) {
+                        if (Peer->Mtu < MinMtu && Peer->Mtu > 0) {
+                            MinMtu = Peer->Mtu;
+                        }
+                    }
+                    if (MinMtu != MaxDatagramLength) {
+                        MaxDatagramLength = MinMtu;
+                        // Inform the VPN that the MTU has changed.
+                        QuicLanTunnelEvent TunnelEvent;
+                        TunnelEvent.Type = TunnelMtuChanged;
+                        TunnelEvent.MtuChanged.Mtu = MaxDatagramLength;
+                        EventHandler(&TunnelEvent);
+                    }
+                    break;
+                }
+
+                case ReceivePacket: {
+                    QuicLanTunnelEvent TunnelEvent;
+                    TunnelEvent.Type = TunnelPacketReceived;
+                    TunnelEvent.PacketReceived.Packet = WorkItem.RecvPacket.Packet.Buffer;
+                    TunnelEvent.PacketReceived.PacketLength = WorkItem.RecvPacket.Packet.Length;
+                    EventHandler(&TunnelEvent);
+                    delete[] WorkItem.RecvPacket.Packet.Buffer; // TODO: return to lookaside list.
+                    break;
+                }
+
+                case RemovePeer: {
+                    auto Peer = WorkItem.RemovePeer.Peer;
+                    auto it = Peers.begin();
+                    while(*it != Peer) it++;
+                    if (it != Peers.end()) {
+                        Peers.erase(it);
+                        Peer->Inserted = false;
+                    }
+                    if (WorkItem.RemovePeer.ShutdownPeer) {
+                        MsQuic->ConnectionShutdown(Peer->Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, WorkItem.RemovePeer.ShutdownError);
+                    }
+                    if (Peers.size() == 0) {
+                        QuicLanTunnelEvent Event;
+                        Event.Type = TunnelDisconnected;
+                        EventHandler(&Event);
+                    }
+                    break;
+                }
+
+                case SendPacket: {
+                    QuicLanPeerContext* FoundPeer = nullptr;
+                    auto SendBuffer = WorkItem.SendPacket.Packet;
+                    struct ip* Ip4Header = nullptr;
+                    struct ip6_hdr* Ip6Header = nullptr;
+                    if ((SendBuffer->Buffer[0] & 0xF0) >> 4 == 4) {
+                        Ip4Header = (struct ip*) SendBuffer->Buffer;
+                        for (auto Peer : Peers) {
+                            if (memcmp(&Peer->InternalAddress4.Ipv4.sin_addr, &Ip4Header->ip_dst, sizeof(in_addr)) == 0) {
+                                FoundPeer = Peer;
+                                break;
+                            }
+                        }
+                    } else {
+                        assert((SendBuffer->Buffer[0] & 0xF0) >> 4 == 6);
+                        Ip6Header = (struct ip6_hdr*) SendBuffer->Buffer;
+                        for (auto Peer : Peers) {
+                            if (memcmp(&Peer->InternalAddress6.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
+                                FoundPeer = Peer;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (FoundPeer != nullptr) {
+                        QUIC_STATUS Status =
+                            MsQuic->DatagramSend(
+                                FoundPeer->Connection,
+                                SendBuffer,
+                                1,
+                                QUIC_SEND_FLAG_NONE,
+                                SendBuffer);
+                        if (QUIC_FAILED(Status)) {
+                            printf("DatagramSend failed! %u\n", Status);
+                            delete SendBuffer;
+                        } else {
+                            IncrementOutstandingDatagrams();
+                        }
+                    } else {
+                        printf("Failed to find peer!\n");
+                        delete SendBuffer;
+                    }
+                    break;
+                }
+
+                case Shutdown: {
+                    std::unique_lock Lock(StopLock);
+                    MsQuic->ListenerStop(Listener);
+                    // TODO: Inform all peers of the disconnect
+                    ShuttingDown = true;
+                    for (auto Peer : Peers) {
+                        Peer->State.Disconnecting = true;
+                        Peer->Inserted = false;
+                        MsQuic->ConnectionShutdown(
+                            Peer->Connection,
+                            QUIC_CONNECTION_SHUTDOWN_FLAG_NONE,
+                            0);
+                    }
+                    Peers.clear();
+                    StopLock.unlock();
+                    StopCv.notify_one();
+                    break;
+                }
+
+                default:
+                    printf("Unimplemented WorkItem type %d\n", WorkItem.Type);
+                    break;
                 }
             }
 
