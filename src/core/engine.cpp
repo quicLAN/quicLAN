@@ -383,6 +383,7 @@ QuicLanEngine::~QuicLanEngine() {
             MsQuic->ListenerClose(Listener);
         }
         for (auto Peer : Peers) {
+            Peer->Inserted = false;
             MsQuic->ConnectionClose(Peer->Connection);
         }
         if (ServerConfig != nullptr) {
