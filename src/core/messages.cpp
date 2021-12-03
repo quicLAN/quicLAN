@@ -66,7 +66,11 @@ QuicLanMessage*
 QuicLanMessageAlloc(
     _In_ uint32_t PayloadLength)
 {
-    QuicLanMessage* NewMessage = (QuicLanMessage*) new uint8_t[sizeof(QuicLanMessage) + sizeof(QuicLanMessageHeader) + PayloadLength];
+    QuicLanMessage* NewMessage = (QuicLanMessage*) new(std::nothrow) uint8_t[sizeof(QuicLanMessage) + sizeof(QuicLanMessageHeader) + PayloadLength];
+    if (NewMessage == nullptr) {
+        printf("Failed to allocate %u for QuicLanMessage\n", sizeof(QuicLanMessage) + sizeof(QuicLanMessageHeader) + PayloadLength);
+        return nullptr;
+    }
     NewMessage->QuicBuffer.Length = sizeof(QuicLanMessageHeader) + PayloadLength;
     NewMessage->QuicBuffer.Buffer = NewMessage->Buffer;
     NewMessage->RefCount = 1;
