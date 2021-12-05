@@ -378,7 +378,7 @@ QuicLanEngine::Initialize(
     }
 
     this->EventHandler = EventHandler;
-    strncpy(this->Password, Password, sizeof(this->Password));
+    this->Password = Password;
 
     return true;
 };
@@ -440,10 +440,10 @@ QuicLanEngine::StartClient()
 
     CredConfig.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12;
     CredConfig.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
-    CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;  // TODO: Remove this eventually
+    CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
     CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
 
-    if (!QuicLanGenerateAuthCertificate(Pkcs12, Pkcs12Length)) {
+    if (!QuicLanGenerateAuthCertificate(Password, Pkcs12, Pkcs12Length)) {
         goto Error;
     }
 
@@ -542,7 +542,7 @@ QuicLanEngine::StartServer(
     Settings.ServerResumptionLevel = QUIC_SERVER_RESUME_AND_ZERORTT;
     Settings.IsSet.ServerResumptionLevel = true;
 
-    if (!QuicLanGenerateAuthCertificate(Pkcs12, Pkcs12Length)) {
+    if (!QuicLanGenerateAuthCertificate(Password, Pkcs12, Pkcs12Length)) {
         return false;
     }
 
@@ -758,7 +758,7 @@ QuicLanEngine::ClientConnectionCallback(
         break;
 
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
-        if (!QuicLanVerifyCertificate(Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
+        if (!QuicLanVerifyCertificate(This->Engine->Password, Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
             printf("Peer failed certificate validation!\n");
             This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
         } else {
@@ -876,7 +876,7 @@ QuicLanEngine::ServerConnectionCallback(
         break;
     }
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
-        if (!QuicLanVerifyCertificate(Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
+        if (!QuicLanVerifyCertificate(This->Engine->Password, Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
             printf("Peer failed certificate validation!\n");
             This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
         } else {

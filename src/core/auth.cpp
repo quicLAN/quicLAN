@@ -2,25 +2,69 @@
     Licensed under the MIT License.
 */
 #include "precomp.h"
+#include "crypto/evp.h"
 #include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/pkcs12.h"
-#include "openssl/x509.h"
+#include "openssl/rand.h"
+#include "openssl/x509v3.h"
 
-// GetCert
-// GetRootCert
+const int PBKDFIterations = 10000;
+const int SigningSaltLength = 64;
+
+void
+PrintHexBuffer(const char* const Label, const uint8_t*const Buf, uint32_t Len)
+{
+    printf("%s: ", Label);
+    for(auto i = 0; i < Len; i++) {
+        printf("%02x", (unsigned char)Buf[i]);
+    }
+    printf("\n");
+}
+
+EVP_PKEY*
+QuicLanGenerateSigningKey(
+    _In_ const std::string& Password,
+    _In_ const uint8_t* const Salt,
+    _In_ const uint32_t SaltLen)
+{
+    EVP_PKEY* SigningKey = nullptr;
+
+    uint8_t SigningKeyBytes[ED448_KEYLEN];
+    int Ret = PKCS5_PBKDF2_HMAC(Password.c_str(), Password.length(), Salt, SaltLen, PBKDFIterations, EVP_sha3_512(), sizeof(SigningKeyBytes), SigningKeyBytes);
+    if (Ret != 1) {
+        printf("Failed to run PBKDF2!\n");
+        goto Error;
+    }
+
+    SigningKey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED448, nullptr, SigningKeyBytes, sizeof(SigningKeyBytes));
+    if (SigningKey == nullptr) {
+        printf("Failed to create signing key!\n");
+        ERR_print_errors_cb([](const char* str, size_t len, void* u){printf("%s", str); return 1;}, nullptr);
+        goto Error;
+    }
+
+Error:
+    CxPlatSecureZeroMemory(SigningKeyBytes, sizeof(SigningKeyBytes));
+    return SigningKey;
+}
 
 bool
 QuicLanGenerateAuthCertificate(
+    _In_ const std::string& Password,
     _Out_ std::unique_ptr<uint8_t[]>& Pkcs12,
     _Out_ uint32_t& Pkcs12Length)
 {
     EVP_PKEY* PrivateKey = nullptr;
+    EVP_PKEY* SigningKey = nullptr;
     X509* SelfSignedCert = nullptr;
     X509_NAME* Name = nullptr;
+    BIGNUM* SaltBn = nullptr;
+    ASN1_INTEGER* SerialNumber = nullptr;
     PKCS12* NewPkcs12 = nullptr;
     uint8_t* Pkcs12Buffer = nullptr;
     uint8_t* Pkcs12BufferPtr = nullptr;
+    uint8_t Salt[SigningSaltLength];
     int Ret = 0;
     bool Result = false;
 
@@ -45,6 +89,12 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
+    Ret = RAND_bytes(Salt, sizeof(Salt));
+    if (Ret != 1) {
+        printf("Failed to get random bytes!\n");
+        goto Error;
+    }
+
     SelfSignedCert = X509_new();
     if (SelfSignedCert == nullptr) {
         printf("Failed to allocate X509!\n");
@@ -57,7 +107,19 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    Ret = ASN1_INTEGER_set(X509_get_serialNumber(SelfSignedCert), 1);
+    SaltBn = BN_bin2bn(Salt, sizeof(Salt), nullptr);
+    if (SaltBn == nullptr) {
+        printf("Failed to convert Salt to BIGNUM!\n");
+        goto Error;
+    }
+
+    SerialNumber = BN_to_ASN1_INTEGER(SaltBn, nullptr);
+    if (SerialNumber == nullptr) {
+        printf("Failed to allocate serial number!\n");
+        goto Error;
+    }
+
+    Ret = X509_set_serialNumber(SelfSignedCert, SerialNumber);
     if (Ret != 1) {
         printf("Failed to set serial number!\n");
         goto Error;
@@ -89,9 +151,15 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    Ret = X509_sign(SelfSignedCert, PrivateKey, nullptr);
+    SigningKey = QuicLanGenerateSigningKey(Password, Salt, sizeof(Salt));
+    if (SigningKey == nullptr) {
+        goto Error;
+    }
+
+    Ret = X509_sign(SelfSignedCert, SigningKey, nullptr);
     if (Ret == 0) {
         printf("Failed to sign certificate!\n");
+        ERR_print_errors_cb([](const char* str, size_t len, void* u){printf("%s\n", str); return 1;}, nullptr);
         goto Error;
     }
 
@@ -142,6 +210,18 @@ Error:
         PKCS12_free(NewPkcs12);
     }
 
+    if (SigningKey != nullptr) {
+        EVP_PKEY_free(SigningKey);
+    }
+
+    if (SerialNumber != nullptr) {
+        ASN1_INTEGER_free(SerialNumber);
+    }
+
+    if (SaltBn != nullptr) {
+        BN_free(SaltBn);
+    }
+
     if (SelfSignedCert != nullptr) {
         X509_free(SelfSignedCert);
     }
@@ -160,8 +240,59 @@ Error:
 
 bool
 QuicLanVerifyCertificate(
+    _In_ const std::string& Password,
     _In_ QUIC_CERTIFICATE* Cert)
 {
+    EVP_PKEY* SigningKey = nullptr;
     X509* PeerCert = (X509*)Cert;
-    return true;
+    BIGNUM* SaltBn = nullptr;
+    uint8_t Salt[SigningSaltLength];
+    int Ret = 0;
+    bool Result = false;
+
+    const ASN1_INTEGER* SerialNumber = X509_get_serialNumber(PeerCert);
+
+    SaltBn = ASN1_INTEGER_to_BN(SerialNumber, nullptr);
+    if (SaltBn == nullptr) {
+        printf("Failed to convert ASN SerialNumber to BIGNUM Salt!\n");
+        goto Error;
+    }
+
+    if (BN_num_bytes(SaltBn) != sizeof(Salt)) {
+        printf("Serial number is not correct size! %u vs %u\n", BN_num_bytes(SaltBn), sizeof(Salt));
+        goto Error;
+    }
+
+    Ret = BN_bn2bin(SaltBn, Salt);
+    if (Ret != sizeof(Salt)) {
+        printf("BIGNUM conversion to binary is wrong size! %u vs %u\n", Ret, sizeof(Salt));
+        goto Error;
+    }
+
+    SigningKey = QuicLanGenerateSigningKey(Password, Salt, sizeof(Salt));
+    if (SigningKey == nullptr) {
+        goto Error;
+    }
+
+    Ret = X509_verify(PeerCert, SigningKey);
+    if (Ret == 0) {
+        printf("Certificate failed signature verification!\n");
+        goto Error;
+    } else if (Ret == -1) {
+        printf("Certificate signature is malformed!\n");
+        goto Error;
+    }
+
+    Result = true;
+
+Error:
+    if (SaltBn != nullptr) {
+        BN_free(SaltBn);
+    }
+
+    if (SigningKey != nullptr) {
+        EVP_PKEY_free(SigningKey);
+    }
+
+    return Result;
 }
