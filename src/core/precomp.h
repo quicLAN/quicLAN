@@ -25,6 +25,7 @@
 #include <thread>
 #include <string.h>
 
+#include "auth.h"
 #include "timer.h"
 #include "messages.h"
 #include "workitem.h"

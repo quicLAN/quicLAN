@@ -55,11 +55,6 @@ struct QuicLanEngine {
     StartServer(
         _In_ uint16_t ListenerPort);
 
-    bool
-    ClientAuthenticationStart(
-        _In_ HQUIC AuthStream,
-        _In_ QuicLanPeerContext* PeerContext);
-
     void
     IncrementOutstandingDatagrams();
 
@@ -107,37 +102,10 @@ struct QuicLanEngine {
     _Function_class_(QUIC_CONNECTION_CALLBACK)
     QUIC_STATUS
     QUIC_API
-    ServerUnauthenticatedConnectionCallback(
+    ServerConnectionCallback(
         _In_ HQUIC Connection,
         _In_opt_ void* Context,
         _Inout_ QUIC_CONNECTION_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_CONNECTION_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ServerAuthenticatedConnectionCallback(
-        _In_ HQUIC Connection,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_CONNECTION_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_STREAM_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ServerAuthStreamCallback(
-        _In_ HQUIC Stream,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_STREAM_EVENT* Event);
-
-    static
-    _Function_class_(QUIC_STREAM_CALLBACK)
-    QUIC_STATUS
-    QUIC_API
-    ClientAuthStreamCallback(
-        _In_ HQUIC Stream,
-        _In_opt_ void* Context,
-        _Inout_ QUIC_STREAM_EVENT* Event);
 
     static
     _Function_class_(QUIC_STREAM_CALLBACK)

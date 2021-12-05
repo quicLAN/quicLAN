@@ -414,8 +414,11 @@ QuicLanEngine::StartClient()
 {
     QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
     QUIC_SETTINGS Settings{};
+    QUIC_CERTIFICATE_PKCS12 Pkcs12Config{};
     QUIC_CREDENTIAL_CONFIG CredConfig{};
     QuicLanPeerContext* Peer = nullptr;
+    std::unique_ptr<uint8_t[]> Pkcs12;
+    uint32_t Pkcs12Length = 0;
     //
     // Start a connection to an existing VPN, and wait for the connection
     // to complete before returning from this call.
@@ -435,9 +438,19 @@ QuicLanEngine::StartClient()
     Settings.PeerUnidiStreamCount = UniDiStreamCount;
     Settings.IsSet.PeerUnidiStreamCount = true;
 
-    CredConfig.Type = QUIC_CREDENTIAL_TYPE_NONE;
+    CredConfig.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12;
     CredConfig.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
     CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;  // TODO: Remove this eventually
+    CredConfig.Flags |= QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
+
+    if (!QuicLanGenerateAuthCertificate(Pkcs12, Pkcs12Length)) {
+        goto Error;
+    }
+
+    CredConfig.CertificatePkcs12 = &Pkcs12Config;
+    CredConfig.CertificatePkcs12->Asn1Blob = Pkcs12.get();
+    CredConfig.CertificatePkcs12->Asn1BlobLength = Pkcs12Length;
+    CredConfig.CertificatePkcs12->PrivateKeyPassword = nullptr;
 
     Status =
         MsQuic->ConfigurationOpen(
@@ -512,7 +525,10 @@ QuicLanEngine::StartServer(
 {
     QUIC_STATUS Status = QUIC_STATUS_SUCCESS;
     QUIC_SETTINGS Settings{};
+    QUIC_CERTIFICATE_PKCS12 Pkcs12Config{};
     QUIC_CREDENTIAL_CONFIG CredConfig{};
+    std::unique_ptr<uint8_t[]> Pkcs12;
+    uint32_t Pkcs12Length = 0;
     Settings.IsSetFlags = 0;
 
     Settings.IdleTimeoutMs = IdleTimeoutMs;
@@ -526,11 +542,18 @@ QuicLanEngine::StartServer(
     Settings.ServerResumptionLevel = QUIC_SERVER_RESUME_AND_ZERORTT;
     Settings.IsSet.ServerResumptionLevel = true;
 
-    QUIC_CERTIFICATE_FILE CertFile = {"key.pem", "cert.pem"};
-    memset(&CredConfig, 0, sizeof(CredConfig));
-    CredConfig.CertificateFile = &CertFile;
-    CredConfig.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
-    CredConfig.Flags = QUIC_CREDENTIAL_FLAG_NONE;
+    if (!QuicLanGenerateAuthCertificate(Pkcs12, Pkcs12Length)) {
+        return false;
+    }
+
+    CredConfig.CertificatePkcs12 = &Pkcs12Config;
+    CredConfig.CertificatePkcs12->Asn1Blob = Pkcs12.get();
+    CredConfig.CertificatePkcs12->Asn1BlobLength = Pkcs12Length;
+    CredConfig.CertificatePkcs12->PrivateKeyPassword = nullptr;
+
+    CredConfig.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_PKCS12;
+    CredConfig.Flags = QUIC_CREDENTIAL_FLAG_REQUIRE_CLIENT_AUTHENTICATION;
+    CredConfig.Flags = QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
 
     Status =
         MsQuic->ConfigurationOpen(
@@ -593,32 +616,6 @@ QuicLanEngine::StartServer(
     }
 
     return QUIC_SUCCEEDED(Status);
-}
-
-bool
-QuicLanEngine::ClientAuthenticationStart(
-    _In_ HQUIC AuthStream,
-    _In_ QuicLanPeerContext* PeerContext)
-{
-    MsQuic->SetCallbackHandler(AuthStream, (void*)QuicLanEngine::ClientAuthStreamCallback, PeerContext);
-
-    uint32_t PasswordLen = strnlen(Password, sizeof(Password));
-    QUIC_BUFFER* SendBuffer = (QUIC_BUFFER*) new(std::nothrow) uint8_t[sizeof(QUIC_BUFFER) + PasswordLen + 1];
-    if (SendBuffer == nullptr) {
-        printf("Failed to allocate %u for authentication buffer!\n", sizeof(QUIC_BUFFER) + PasswordLen + 1);
-        return false;
-    }
-    QuicLanAuthBlock* AuthBlock = (QuicLanAuthBlock*) (SendBuffer + 1);
-    strncpy(AuthBlock->Pw, Password, PasswordLen);
-    AuthBlock->Len = (uint8_t) PasswordLen;
-    SendBuffer->Length = AuthBlock->Len + 1;
-    SendBuffer->Buffer = (uint8_t*) AuthBlock;
-    if (QUIC_FAILED(MsQuic->StreamSend(AuthStream, SendBuffer, 1, QUIC_SEND_FLAG_FIN, SendBuffer))) {
-        printf("Client failed to send authentication block!\n");
-        return false;
-    }
-    PeerContext->State.Authenticating = true;
-    return true;
 }
 
 void
@@ -717,12 +714,7 @@ QuicLanEngine::ServerListenerCallback(
         PeerContext->Connection = Event->NEW_CONNECTION.Connection;
         PeerContext->Server = true;
         PeerContext->Engine = This;
-        if (This->QueueWorkItem({.Type = AddPeer, .AddPeer = {PeerContext}})) { // TODO: Wait to add peer until connection/authentication succeeds.
-            This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerUnauthenticatedConnectionCallback, PeerContext);
-        } else {
-            delete PeerContext;
-            return QUIC_STATUS_CONNECTION_REFUSED;
-        }
+        This->MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)ServerConnectionCallback, PeerContext);
         break;
     }
     default:
@@ -740,8 +732,7 @@ QuicLanEngine::ClientConnectionCallback(
     _Inout_ QUIC_CONNECTION_EVENT* Event)
 {
     auto This = (QuicLanPeerContext*)Context;
-
-    QuicLanTunnelEvent TunnelEvent{};
+    auto Status = QUIC_STATUS_SUCCESS;
 
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
@@ -765,6 +756,17 @@ QuicLanEngine::ClientConnectionCallback(
             delete This;
         }
         break;
+
+    case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
+        if (!QuicLanVerifyCertificate(Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
+            printf("Peer failed certificate validation!\n");
+            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
+        } else {
+            This->State.Authenticated = true;
+        }
+        break;
+    }
+
     case QUIC_CONNECTION_EVENT_STREAMS_AVAILABLE:
         if (!This->State.Authenticated && (Event->STREAMS_AVAILABLE.BidirectionalCount + Event->STREAMS_AVAILABLE.UnidirectionalCount > 0)) {
             printf(
@@ -782,23 +784,14 @@ QuicLanEngine::ClientConnectionCallback(
         }
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
-        if (!This->State.Authenticated && !This->State.Authenticating) {
-            if (!This->Engine->ClientAuthenticationStart(Event->PEER_STREAM_STARTED.Stream, This)) {
-                This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_INTERNAL_ERROR, true}});
-            }
-        } else if (This->State.Authenticated) {
-            QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
-            if (RecvCtx == nullptr) {
-                printf("Failed to allocate ControlStreamReceiveContext!\n");
-                This->Engine->MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
-                break;
-            }
-            RecvCtx->Peer = This;
-            This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
-        } else {
-            printf("Client received stream start from server during authentication!\n");
-            assert(false);
+        QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+        if (RecvCtx == nullptr) {
+            printf("Failed to allocate ControlStreamReceiveContext!\n");
+            Status = QUIC_STATUS_OUT_OF_MEMORY;
+            break;
         }
+        RecvCtx->Peer = This;
+        This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
         break;
     }
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
@@ -834,122 +827,77 @@ QuicLanEngine::ClientConnectionCallback(
     default:
         break;
     }
-    return QUIC_STATUS_SUCCESS;
+    return Status;
 }
 
 _Function_class_(QUIC_CONNECTION_CALLBACK)
 QUIC_STATUS
 QUIC_API
-QuicLanEngine::ServerUnauthenticatedConnectionCallback(
+QuicLanEngine::ServerConnectionCallback(
     _In_ HQUIC Connection,
     _In_opt_ void* Context,
     _Inout_ QUIC_CONNECTION_EVENT* Event)
 {
     auto This = (QuicLanPeerContext*)Context;
-    QuicLanTunnelEvent TunnelEvent{};
+    auto Status = QUIC_STATUS_SUCCESS;
 
     switch (Event->Type) {
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
+        printf("[conn][%p] Shutdown by transport, 0x%x\n",
+            Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
+        break;
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
+        printf("[conn][%p] Shutdown by peer, 0x%llx\n",
+            Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
+        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
+        break;
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+        printf("[conn][%p] Complete\n", Connection);
+        This->State.Disconnected = true;
+        if (!This->Inserted) {
+            This->Engine->MsQuic->ConnectionClose(Connection);
+            delete This;
+        }
+        break;
     case QUIC_CONNECTION_EVENT_CONNECTED: {
-        printf("[conn][%p] Server Connected\n", Connection);
-        This->State.Connected = true;
-        HQUIC AuthStream;
-        if (QUIC_FAILED(
-                This->Engine->MsQuic->StreamOpen(
-                    Connection,
-                    QUIC_STREAM_OPEN_FLAG_NONE,
-                    QuicLanEngine::ServerAuthStreamCallback,
-                    Context,
-                    &AuthStream))) {
-            printf("Server Failed to open auth stream!\n");
-        }
-        if (QUIC_FAILED(
-            This->Engine->MsQuic->StreamStart(AuthStream, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
-            printf("Server Failed to start auth stream!\n");
+        QUIC_SETTINGS Settings{};
+        Settings.PeerUnidiStreamCount = UniDiStreamCount;
+        Settings.IsSet.PeerUnidiStreamCount = true;
+
+        This->Engine->QueueWorkItem({.Type = AddPeer, .AddPeer = {This}});
+        This->Engine->MsQuic->ConnectionSendResumptionTicket(Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
+        This->Engine->MsQuic->SetParam(
+            Connection,
+            QUIC_PARAM_LEVEL_CONNECTION,
+            QUIC_PARAM_CONN_SETTINGS,
+            sizeof(Settings),
+            &Settings);
+        break;
+    }
+    case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
+        if (!QuicLanVerifyCertificate(Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
+            printf("Peer failed certificate validation!\n");
+            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
+        } else {
+            This->State.Authenticated = true;
         }
         break;
     }
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
-        printf("[conn][%p] Shutdown by transport, 0x%x\n",
-            Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
-        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
-        break;
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
-        printf("[conn][%p] Shutdown by peer, 0x%llx\n",
-            Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
-        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
-        break;
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
-        printf("[conn][%p] Complete\n", Connection);
-        This->State.Disconnected = true;
-        if (!This->Inserted) {
-            This->Engine->MsQuic->ConnectionClose(Connection);
-            delete This;
-        }
-        break;
-    case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
-        // TODO: kill connection; peer tried to start control stream before authenticating.
-        printf("Client tried to start stream before authenticating!!\n");
-        return QUIC_STATUS_NOT_SUPPORTED;
-        break;
-    case QUIC_CONNECTION_EVENT_DATAGRAM_STATE_CHANGED:
-        if (Event->DATAGRAM_STATE_CHANGED.SendEnabled) {
-            This->Mtu = Event->DATAGRAM_STATE_CHANGED.MaxSendLength;
-        }
-        break;
-    default:
-        break;
-    }
-    return QUIC_STATUS_SUCCESS;
-}
-
-_Function_class_(QUIC_CONNECTION_CALLBACK)
-QUIC_STATUS
-QUIC_API
-QuicLanEngine::ServerAuthenticatedConnectionCallback(
-    _In_ HQUIC Connection,
-    _In_opt_ void* Context,
-    _Inout_ QUIC_CONNECTION_EVENT* Event)
-{
-    auto This = (QuicLanPeerContext*)Context;
-    QuicLanTunnelEvent TunnelEvent{};
-
-    switch (Event->Type) {
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
-        printf("[conn][%p] Shutdown by transport, 0x%x\n",
-            Connection, Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
-        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
-        break;
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
-        printf("[conn][%p] Shutdown by peer, 0x%llx\n",
-            Connection, Event->SHUTDOWN_INITIATED_BY_PEER.ErrorCode);
-        This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
-        break;
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
-        printf("[conn][%p] Complete\n", Connection);
-        This->State.Disconnected = true;
-        if (!This->Inserted) {
-            This->Engine->MsQuic->ConnectionClose(Connection);
-            delete This;
-        }
-        break;
     case QUIC_CONNECTION_EVENT_PEER_ADDRESS_CHANGED:
         This->ExternalAddress = *Event->PEER_ADDRESS_CHANGED.Address; // TODO move this to worker thread.
         break;
-    case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED:
-        if (This->State.Authenticated) {
-            QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
-            if (RecvCtx == nullptr) {
-                printf("Failed to allocate ControlStreamReceiveContext!\n");
-                This->Engine->MsQuic->StreamClose(Event->PEER_STREAM_STARTED.Stream);
-                break;
-            }
-            RecvCtx->Peer = This;
-            This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
-        } else {
-            // TODO: kill connection; peer tried to start control stream before authenticating.
-            printf("Client tried to start stream while not yet authenticated (but this is authenticated callback?)\n");
+    case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
+        QuicLanControlStreamReceiveContext* RecvCtx = new(std::nothrow) QuicLanControlStreamReceiveContext();
+        if (RecvCtx == nullptr) {
+            printf("Failed to allocate ControlStreamReceiveContext!\n");
+            Status = QUIC_STATUS_OUT_OF_MEMORY;
+            break;
         }
+        RecvCtx->Peer = This;
+        This->Engine->MsQuic->SetCallbackHandler(Event->PEER_STREAM_STARTED.Stream, (void*)QuicLanEngine::ReceiveControlStreamCallback, RecvCtx);
         break;
+    }
     case QUIC_CONNECTION_EVENT_DATAGRAM_RECEIVED:
         // Check that the packet is destined for this server, and send it to
         /// the VPN interface.
@@ -984,141 +932,7 @@ QuicLanEngine::ServerAuthenticatedConnectionCallback(
     default:
         break;
     }
-    return QUIC_STATUS_SUCCESS;
-}
-
-_Function_class_(QUIC_STREAM_CALLBACK)
-QUIC_STATUS
-QUIC_API
-QuicLanEngine::ServerAuthStreamCallback(
-    _In_ HQUIC Stream,
-    _In_opt_ void* Context,
-    _Inout_ QUIC_STREAM_EVENT* Event)
-{
-    QuicLanPeerContext *This = (QuicLanPeerContext*)Context;
-    switch (Event->Type) {
-    case QUIC_STREAM_EVENT_START_COMPLETE:
-        if (QUIC_FAILED(Event->START_COMPLETE.Status)) {
-            printf("Server failed to start auth stream!\n");
-            // TODO: shutdown the connection.
-        }
-        This->State.Authenticating = true;
-        break;
-    case QUIC_STREAM_EVENT_RECEIVE: {
-        if (Event->RECEIVE.BufferCount > 1) {
-            printf("Server received %u buffers from client. Expected 1!\n", Event->RECEIVE.BufferCount);
-        }
-        QuicLanAuthBlock* AuthBlock = (QuicLanAuthBlock*) Event->RECEIVE.Buffers[0].Buffer;
-        if (strnlen(AuthBlock->Pw, Event->RECEIVE.Buffers[0].Length - 1) != AuthBlock->Len ||
-            AuthBlock->Len != strnlen(This->Engine->Password, sizeof(This->Engine->Password)) ||
-            strncmp(AuthBlock->Pw, This->Engine->Password, Event->RECEIVE.Buffers[0].Length - 1)) {
-            // Client-provided password doesn't match our password. Kill the connection!
-            printf("Client password doesn't match our password! BufferLen: %u, %u != %u, %s != %s\n",
-                Event->RECEIVE.Buffers[0].Length,
-                AuthBlock->Len,
-                strnlen(This->Engine->Password, sizeof(This->Engine->Password)),
-                AuthBlock->Pw,
-                This->Engine->Password);
-            This->State.AuthenticationFailed = true;
-            This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
-            This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_CONNECTION_REFUSED, true}});
-        } else {
-            // Client-provided password matches! Send our password in response and allow client to open control stream.
-            This->State.Authenticated = true;
-            QUIC_BUFFER* SendBuffer = new(std::nothrow) QUIC_BUFFER;
-            if (SendBuffer == nullptr) {
-                printf("Server failed to allocate auth send buffer!\n");
-                This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_INTERNAL_ERROR, true}});
-                break;
-            }
-            SendBuffer->Length = Event->RECEIVE.Buffers[0].Length;
-            SendBuffer->Buffer = Event->RECEIVE.Buffers[0].Buffer;
-            Event->RECEIVE.TotalBufferLength = 0; // Tell MsQuic to not free the receive buffer yet.
-            QUIC_SETTINGS Settings{};
-            Settings.PeerUnidiStreamCount = UniDiStreamCount;
-            Settings.IsSet.PeerUnidiStreamCount = true;
-
-            This->Engine->MsQuic->SetCallbackHandler(This->Connection, (void*)ServerAuthenticatedConnectionCallback, This);
-            This->Engine->MsQuic->ConnectionSendResumptionTicket(This->Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
-            This->Engine->MsQuic->StreamSend(Stream, SendBuffer, 1, QUIC_SEND_FLAG_FIN, SendBuffer);
-            This->Engine->MsQuic->SetParam(
-                This->Connection,
-                QUIC_PARAM_LEVEL_CONNECTION,
-                QUIC_PARAM_CONN_SETTINGS,
-                sizeof(Settings),
-                &Settings);
-            
-            QuicLanTunnelEvent TunnelEvent{};
-            // Now the client is authenticated and allowed to change MTU for the
-            // entire tunnel.
-            if (This->Mtu < This->Engine->MaxDatagramLength) {
-                This->Engine->QueueWorkItem({.Type = MtuChanged});
-            }
-            return QUIC_STATUS_PENDING; // Tell MsQuic to not free the receive buffer yet.
-        }
-        break;
-    }
-    case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        This->Engine->MsQuic->StreamReceiveComplete(Stream, ((QUIC_BUFFER*) Event->SEND_COMPLETE.ClientContext)->Length);
-        delete (QUIC_BUFFER*) Event->SEND_COMPLETE.ClientContext;
-        break;
-    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-        This->Engine->MsQuic->StreamClose(Stream);
-        printf("Server auth stream closed\n");
-        break;
-    }
-    // TODO:
-    return QUIC_STATUS_SUCCESS;
-}
-
-_Function_class_(QUIC_STREAM_CALLBACK)
-QUIC_STATUS
-QUIC_API
-QuicLanEngine::ClientAuthStreamCallback(
-    _In_ HQUIC Stream,
-    _In_opt_ void* Context,
-    _Inout_ QUIC_STREAM_EVENT* Event)
-{
-    QuicLanPeerContext *This = (QuicLanPeerContext*)Context;
-    switch (Event->Type) {
-    case QUIC_STREAM_EVENT_RECEIVE: {
-        if (Event->RECEIVE.BufferCount > 1) {
-            printf("Client received %u buffers from Server. Expected 1!\n", Event->RECEIVE.BufferCount);
-        }
-        QuicLanAuthBlock* AuthBlock = (QuicLanAuthBlock*) Event->RECEIVE.Buffers[0].Buffer;
-        if (strnlen(AuthBlock->Pw, AuthBlock->Len) != AuthBlock->Len ||
-            AuthBlock->Len != strnlen(This->Engine->Password, sizeof(This->Engine->Password)) ||
-            strncmp(AuthBlock->Pw, This->Engine->Password, Event->RECEIVE.Buffers[0].Length - 1)) {
-            // Server-provided password doesn't match our password. Kill the connection!
-            printf("Server password doesn't match our password! BufferLen: %u, %u != %u, %s != %s\n",
-                Event->RECEIVE.Buffers[0].Length,
-                AuthBlock->Len,
-                strnlen(This->Engine->Password, sizeof(This->Engine->Password)),
-                AuthBlock->Pw,
-                This->Engine->Password);
-            This->State.AuthenticationFailed = true;
-            This->Engine->MsQuic->StreamShutdown(Stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, QUIC_STATUS_CONNECTION_REFUSED);
-            This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, QUIC_STATUS_CONNECTION_REFUSED, true}});
-        } else {
-            This->State.Authenticated = true;
-
-            QuicLanTunnelEvent TunnelEvent{};
-            if (This->Mtu < This->Engine->MaxDatagramLength) {
-                This->Engine->QueueWorkItem({.Type = MtuChanged});
-            }
-        }
-        break;
-    }
-    case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        // Delete the send data allocated in ClientAuthenticationStart()
-        delete[] (uint8_t*) Event->SEND_COMPLETE.ClientContext;
-        break;
-    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-        This->Engine->MsQuic->StreamClose(Stream);
-        printf("Client auth stream closed\n");
-        break;
-    }
-    return QUIC_STATUS_SUCCESS;
+    return Status;
 }
 
 _Function_class_(QUIC_STREAM_CALLBACK)

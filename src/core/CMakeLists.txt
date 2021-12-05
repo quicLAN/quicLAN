@@ -1,5 +1,6 @@
 set(SOURCES
     api.cpp
+    auth.cpp
     engine.cpp
     messages.cpp
 )
