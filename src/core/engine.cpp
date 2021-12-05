@@ -24,7 +24,6 @@ const uint64_t IdleTimeoutMs = 30000;
 const uint64_t MaxBytesPerKey = 1000000;
 const uint8_t DatagramsEnabled = TRUE;
 const uint32_t KeepAliveMs = 5000;
-const uint16_t BiDiStreamCount = 1;
 const uint16_t UniDiStreamCount = 1;
 
 const uint32_t WorkItemBatchSize = 10;
@@ -433,8 +432,6 @@ QuicLanEngine::StartClient()
     Settings.IsSet.KeepAliveIntervalMs = true;
     Settings.DatagramReceiveEnabled = true;
     Settings.IsSet.DatagramReceiveEnabled = true;
-    Settings.PeerBidiStreamCount = BiDiStreamCount;
-    Settings.IsSet.PeerBidiStreamCount = true;
     Settings.PeerUnidiStreamCount = UniDiStreamCount;
     Settings.IsSet.PeerUnidiStreamCount = true;
 
@@ -506,9 +503,6 @@ QuicLanEngine::StartClient()
             ServerPort);
     if (QUIC_FAILED(Status)) {
         printf("Failed to start connection 0x%x\n", Status);
-        goto Error;
-    }
-    if (!QueueWorkItem({.Type = AddPeer, .AddPeer = {Peer}})) {
         goto Error;
     }
     Peer = nullptr;
@@ -737,6 +731,9 @@ QuicLanEngine::ClientConnectionCallback(
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
         printf("[conn][%p] Connected\n", Connection);
+        if (!This->Engine->QueueWorkItem({.Type = AddPeer, .AddPeer = {This}})) {
+            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_INTERNAL_ERROR);
+        }
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         printf("[conn][%p] Shutdown by peer, 0x%x\n",
@@ -865,7 +862,10 @@ QuicLanEngine::ServerConnectionCallback(
         Settings.PeerUnidiStreamCount = UniDiStreamCount;
         Settings.IsSet.PeerUnidiStreamCount = true;
 
-        This->Engine->QueueWorkItem({.Type = AddPeer, .AddPeer = {This}});
+        if (!This->Engine->QueueWorkItem({.Type = AddPeer, .AddPeer = {This}})) {
+            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_INTERNAL_ERROR);
+            break;
+        }
         This->Engine->MsQuic->ConnectionSendResumptionTicket(Connection, QUIC_SEND_RESUMPTION_FLAG_FINAL, 0, nullptr);
         This->Engine->MsQuic->SetParam(
             Connection,
