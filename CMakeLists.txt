@@ -16,6 +16,8 @@ else()
 endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/src/inc)
+# Use the same OpenSSL version as MsQuic
+include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/submodules/openssl/include)
 include_directories(${CMAKE_SOURCE_DIR}/src/inc)
 
 set(QUIC_TLS "openssl")
