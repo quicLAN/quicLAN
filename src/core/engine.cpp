@@ -757,7 +757,7 @@ QuicLanEngine::ClientConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
         if (!QuicLanVerifyCertificate(This->Engine->Password, Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
             printf("Peer failed certificate validation!\n");
-            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
+            Status = QUIC_STATUS_CONNECTION_REFUSED;
         } else {
             This->State.Authenticated = true;
         }
@@ -878,7 +878,7 @@ QuicLanEngine::ServerConnectionCallback(
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
         if (!QuicLanVerifyCertificate(This->Engine->Password, Event->PEER_CERTIFICATE_RECEIVED.Certificate)) {
             printf("Peer failed certificate validation!\n");
-            This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_CONNECTION_REFUSED);
+            Status = QUIC_STATUS_CONNECTION_REFUSED;
         } else {
             This->State.Authenticated = true;
         }
