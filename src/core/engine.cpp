@@ -55,9 +55,13 @@ QuicLanEngine::WorkerThreadProc()
                 return;
             }
             std::list<QuicLanWorkItem> Batch{};
-            auto SpliceEnd = WorkItems.begin();
-            for(auto i = 0; SpliceEnd != WorkItems.end() && i < WorkItemBatchSize; ++i, ++SpliceEnd);
-            Batch.splice(Batch.end(), WorkItems, WorkItems.begin(), SpliceEnd);
+            if (WorkItems.size() <= WorkItemBatchSize) {
+                Batch.swap(WorkItems);
+            } else {
+                auto SpliceEnd = WorkItems.begin();
+                std::advance(SpliceEnd, WorkItemBatchSize);
+                Batch.splice(Batch.end(), WorkItems, WorkItems.begin(), SpliceEnd);
+            }
             lock.unlock();
 
             for (auto& WorkItem : Batch) {
@@ -150,6 +154,36 @@ QuicLanEngine::WorkerThreadProc()
                         }
                         break;
 
+                    case WhoAreYou: {
+                        QuicLanMessage* Message = QuicLanMessageAlloc(sizeof(uint16_t));
+                        if (Message == nullptr) {
+                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                            break;
+                        }
+
+                        uint8_t* Payload = QuicLanMessageHeaderFormat(IAmMe, ID, sizeof(uint16_t), Message->Buffer);
+
+                        memcpy(Payload, &ID, sizeof(ID));
+
+                        QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = IAmMe}});
+                        break;
+                    }
+
+                    case IAmMe: {
+                        if (WorkItem.ControlMessage.RecvData.Length != sizeof(uint16_t)) {
+                            printf("Received invalid IAmMe message. Length: %u vs. %u\n",
+                            WorkItem.ControlMessage.RecvData.Length,
+                            sizeof(uint16_t));
+                            break;
+                        }
+                        auto Peer = WorkItem.ControlMessage.Peer;
+                        // ID is in network-order.
+                        memcpy(&Peer->ID, RecvData.Buffer, sizeof(uint16_t));
+                        ConvertIdToAddress(Peer->ID, Peer->InternalAddress4, Peer->InternalAddress6);
+                        Peer->State.IdUnknown = false;
+                        break;
+                    }
+
                     default:
                         break;
                     }
@@ -171,24 +205,10 @@ QuicLanEngine::WorkerThreadProc()
                         }
                         QuicLanMessageHeaderFormat(RequestId, ID, 0, Message->Buffer);
 
-                        HQUIC Stream = nullptr;
-                        if (QUIC_FAILED(MsQuic->StreamOpen(
-                                WorkItem.ControlMessage.Peer->Connection,
-                                QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
-                                SendControlStreamCallback,
-                                WorkItem.ControlMessage.Peer,
-                                &Stream)) ||
-                            QUIC_FAILED(MsQuic->StreamSend(
-                                Stream,
-                                &Message->QuicBuffer, 1,
-                                QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
-                                Message))) {
-                            printf("Client failed to send requestId message! \n");
-                            QuicLanMessageFree(Message);
-                            if (Stream != nullptr) {
-                                MsQuic->StreamClose(Stream);
-                            }
-                        } else {
+                        if (ControlStreamSend(
+                            WorkItem.ControlMessage.Peer,
+                            Message,
+                            "Client failed to send requestId message!\n")) {
                             // TODO: Create retry logic
                             IdRequested = true;
                         }
@@ -196,26 +216,30 @@ QuicLanEngine::WorkerThreadProc()
                     }
 
                     case AssignId: {
-                        auto Message = WorkItem.ControlMessage.SendData;
-                        auto Peer = WorkItem.ControlMessage.Peer;
-                        HQUIC Stream = nullptr;
-                        if (QUIC_FAILED(MsQuic->StreamOpen(
-                                Peer->Connection,
-                                QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
-                                SendControlStreamCallback,
-                                Peer,
-                                &Stream)) ||
-                            QUIC_FAILED(MsQuic->StreamSend(
-                                Stream,
-                                &Message->QuicBuffer, 1,
-                                QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
-                                Message))) {
-                            printf("Server failed to send AssignId message to client.\n");
-                            QuicLanMessageFree(Message);
-                            if (Stream != nullptr) {
-                                MsQuic->StreamClose(Stream);
-                            }
+                        ControlStreamSend(
+                            WorkItem.ControlMessage.Peer,
+                            WorkItem.ControlMessage.SendData,
+                            "Server failed to send AssignId message to client!\n");
+                        break;
+                    }
+
+                    case WhoAreYou: {
+                        QuicLanMessage* Message = QuicLanMessageAlloc(0);
+                        if (Message == nullptr) {
+                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessage.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                            break;
                         }
+                        QuicLanMessageHeaderFormat(WhoAreYou, ID, 0, Message->Buffer);
+
+                        ControlStreamSend(WorkItem.ControlMessage.Peer, Message, "Client failed to send WhoAreYou message!\n");
+                        break;
+                    }
+
+                    case IAmMe: {
+                        ControlStreamSend(
+                            WorkItem.ControlMessage.Peer,
+                            WorkItem.ControlMessage.SendData,
+                            "Server failed to send IAmMe message to client.\n");
                         break;
                     }
 
@@ -480,9 +504,7 @@ QuicLanEngine::StartClient()
     }
     Peer->Engine = this;
     Peer->FirstConnection = true;
-    // TODO: Hacks for development. Remove when implementing address announcements
-    Peer->ID = 1;
-    ConvertIdToAddress(Peer->ID, Peer->InternalAddress4, Peer->InternalAddress6);
+    Peer->State.IdUnknown = true;
     Status =
         MsQuic->ConnectionOpen(
             Registration,
@@ -675,6 +697,34 @@ QuicLanEngine::QueueWorkItem(
     return true;
 }
 
+bool
+QuicLanEngine::ControlStreamSend(
+    _In_ QuicLanPeerContext* Peer,
+    _In_ QuicLanMessage* Message,
+    _In_ const char* const Error)
+{
+    HQUIC Stream = nullptr;
+    if (QUIC_FAILED(MsQuic->StreamOpen(
+            Peer->Connection,
+            QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
+            SendControlStreamCallback,
+            Peer,
+            &Stream)) ||
+        QUIC_FAILED(MsQuic->StreamSend(
+            Stream,
+            &Message->QuicBuffer, 1,
+            QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN,
+            Message))) {
+        printf(Error);
+        QuicLanMessageFree(Message);
+        if (Stream != nullptr) {
+            MsQuic->StreamClose(Stream);
+        }
+        return false;
+    }
+    return true;
+}
+
 _Function_class_(QUIC_LISTENER_CALLBACK)
 QUIC_STATUS
 QUIC_API
@@ -771,7 +821,11 @@ QuicLanEngine::ClientConnectionCallback(
                 Event->STREAMS_AVAILABLE.BidirectionalCount,
                 Event->STREAMS_AVAILABLE.UnidirectionalCount);
         }
-        if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
+
+        if (This->FirstConnection && This->State.IdUnknown) {
+            This->Engine->QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = This, .Type = WhoAreYou}});
+
+        } else if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
             // Start client by requesting IP address.
             QuicLanWorkItem WorkItem;
             WorkItem.Type = ControlMessageSend;
@@ -945,9 +999,9 @@ QuicLanEngine::SendControlStreamCallback(
 {
     switch (Event->Type) {
         case QUIC_STREAM_EVENT_START_COMPLETE:
-            printf("[Strm] %p started with %d\n", Stream, Event->START_COMPLETE.Status);
+            printf("[Strm] %p Send stream started with %d\n", Stream, Event->START_COMPLETE.Status);
             if (QUIC_FAILED(Event->START_COMPLETE.Status)) {
-                printf("Failed to start control stream! %u\n", Event->START_COMPLETE.Status);
+                printf("Failed to start Send stream! %u\n", Event->START_COMPLETE.Status);
                 // TODO: shutdown the connection.
             }
             break;
@@ -955,7 +1009,7 @@ QuicLanEngine::SendControlStreamCallback(
             QuicLanMessageFree((QuicLanMessage*)Event->SEND_COMPLETE.ClientContext);
             break;
         case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-            printf("[Strm] %p shutdown complete.\n", Stream);
+            printf("[Strm] %p Send stream shutdown complete.\n", Stream);
             ((QuicLanPeerContext*)Context)->Engine->MsQuic->StreamClose(Stream);
             break;
         default:
@@ -1065,7 +1119,7 @@ QuicLanEngine::ReceiveControlStreamCallback(
             }
             break;
         case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {
-            printf("[Strm] %p shutdown complete.\n", Stream);
+            printf("[Strm] %p Recv stream shutdown complete.(Type %d)\n", Stream, RecvCtx->Type);
             auto StreamClose = RecvCtx->Peer->Engine->MsQuic->StreamClose;
             if (RecvCtx->Data.Buffer != nullptr) {
                 delete [] RecvCtx->Data.Buffer;
