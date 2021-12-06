@@ -57,7 +57,7 @@ QuicLanGenerateAuthCertificate(
 {
     EVP_PKEY* PrivateKey = nullptr;
     EVP_PKEY* SigningKey = nullptr;
-    X509* SelfSignedCert = nullptr;
+    X509* Cert = nullptr;
     X509_NAME* Name = nullptr;
     BIGNUM* SaltBn = nullptr;
     ASN1_INTEGER* SerialNumber = nullptr;
@@ -95,13 +95,13 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    SelfSignedCert = X509_new();
-    if (SelfSignedCert == nullptr) {
+    Cert = X509_new();
+    if (Cert == nullptr) {
         printf("Failed to allocate X509!\n");
         goto Error;
     }
 
-    Ret = X509_set_version(SelfSignedCert, 2);
+    Ret = X509_set_version(Cert, 2);
     if (Ret != 1) {
         printf("Failed to set certificate version!\n");
         goto Error;
@@ -119,22 +119,22 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    Ret = X509_set_serialNumber(SelfSignedCert, SerialNumber);
+    Ret = X509_set_serialNumber(Cert, SerialNumber);
     if (Ret != 1) {
         printf("Failed to set serial number!\n");
         goto Error;
     }
 
-    X509_gmtime_adj(X509_get_notBefore(SelfSignedCert), -300);
-    X509_gmtime_adj(X509_get_notAfter(SelfSignedCert), 31536000L);
+    X509_gmtime_adj(X509_getm_notBefore(Cert), -300);
+    X509_gmtime_adj(X509_getm_notAfter(Cert), 31536000L);
 
-    Ret = X509_set_pubkey(SelfSignedCert, PrivateKey);
+    Ret = X509_set_pubkey(Cert, PrivateKey);
     if (Ret != 1) {
         printf("Failed to set public key on cert!\n");
         goto Error;
     }
 
-    Name = X509_get_subject_name(SelfSignedCert);
+    Name = X509_get_subject_name(Cert);
     if (Name == nullptr) {
         printf("Failed to allocate subject name!\n");
         goto Error;
@@ -145,7 +145,7 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    Ret = X509_set_issuer_name(SelfSignedCert, Name);
+    Ret = X509_set_issuer_name(Cert, Name);
     if (Ret != 1) {
         printf("Failed to set issuer name!\n");
         goto Error;
@@ -156,14 +156,14 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
-    Ret = X509_sign(SelfSignedCert, SigningKey, nullptr);
+    Ret = X509_sign(Cert, SigningKey, nullptr);
     if (Ret == 0) {
         printf("Failed to sign certificate!\n");
         ERR_print_errors_cb([](const char* str, size_t len, void* u){printf("%s\n", str); return 1;}, nullptr);
         goto Error;
     }
 
-    NewPkcs12 = PKCS12_create("", "quicLAN", PrivateKey, SelfSignedCert, nullptr, -1, -1, 0, 0, 0);
+    NewPkcs12 = PKCS12_create("", "quicLAN", PrivateKey, Cert, nullptr, -1, -1, 0, 0, 0);
     if (NewPkcs12 == nullptr) {
         printf("Failed to create new PKCS12!\n");
         goto Error;
@@ -222,8 +222,8 @@ Error:
         BN_free(SaltBn);
     }
 
-    if (SelfSignedCert != nullptr) {
-        X509_free(SelfSignedCert);
+    if (Cert != nullptr) {
+        X509_free(Cert);
     }
 
     if (PrivateKey != nullptr) {
@@ -250,7 +250,7 @@ QuicLanVerifyCertificate(
     int Ret = 0;
     bool Result = false;
 
-    const ASN1_INTEGER* SerialNumber = X509_get_serialNumber(PeerCert);
+    const ASN1_INTEGER* const SerialNumber = X509_get_serialNumber(PeerCert);
 
     SaltBn = ASN1_INTEGER_to_BN(SerialNumber, nullptr);
     if (SaltBn == nullptr) {
