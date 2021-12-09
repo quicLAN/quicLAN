@@ -9,6 +9,8 @@ enum QuicLanMessageType:uint8_t {
     InvalidMessage = 0,
     RequestId,
     AssignId,
+    WhoAreYou,
+    IAmMe,
     RequestPeers,
     KnownPeers,
     MaxMessageType

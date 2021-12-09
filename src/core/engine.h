@@ -16,7 +16,7 @@ struct QuicLanPeerContext {
     QUIC_ADDR InternalAddress4; // TODO: Save client address here when they announce it.
     QUIC_ADDR InternalAddress6; // Ditto.
     struct {
-        uint32_t AddressReserved : 1;
+        uint32_t IdUnknown : 1;
         uint32_t Connected : 1;
         uint32_t Authenticated : 1;
         uint32_t TimedOut : 1;
@@ -77,6 +77,12 @@ struct QuicLanEngine {
     bool
     QueueWorkItem(
         _In_ const QuicLanWorkItem& WorkItem);
+
+    bool
+    ControlStreamSend(
+        _In_ QuicLanPeerContext* Peer,
+        _In_ QuicLanMessage* Message,
+        _In_ const char* const Error);
 
     static
     _Function_class_(QUIC_LISTENER_CALLBACK)
