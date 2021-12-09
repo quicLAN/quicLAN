@@ -4,11 +4,6 @@
 
 const uint16_t MaxPacketLength = 1500;
 
-struct QuicLanAuthBlock{
-    uint8_t Len;
-    char Pw[255];
-};
-
 struct QuicLanPeerContext {
     QuicLanEngine* Engine;
     HQUIC Connection;

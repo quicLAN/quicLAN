@@ -23,13 +23,15 @@ struct QuicLanWorkItem {
         } AddPeer;
         struct {
             QuicLanPeerContext* Peer;
-            union {
-                QUIC_BUFFER RecvData;
-                QuicLanMessage* SendData;
-            };
+            QUIC_BUFFER RecvData;
             uint16_t HostId;
             QuicLanMessageType Type;
-        } ControlMessage;
+        } ControlMessageRecv;
+        struct {
+            QuicLanPeerContext* Peer;
+            QuicLanMessage* SendData;
+            QuicLanMessageType Type;
+        } ControlMessageSend;
         struct {
             QuicLanPeerContext* Peer;
             uint16_t NewMtu;

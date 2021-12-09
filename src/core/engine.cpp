@@ -73,9 +73,9 @@ QuicLanEngine::WorkerThreadProc()
                 }
 
                 case ControlMessageReceived: {
-                    auto Peer = WorkItem.ControlMessage.Peer;
-                    auto& RecvData = WorkItem.ControlMessage.RecvData;
-                    switch (WorkItem.ControlMessage.Type)
+                    auto Peer = WorkItem.ControlMessageRecv.Peer;
+                    auto& RecvData = WorkItem.ControlMessageRecv.RecvData;
+                    switch (WorkItem.ControlMessageRecv.Type)
                     {
                     case RequestId: {
                         assert(RecvData.Length == 0);
@@ -118,7 +118,7 @@ QuicLanEngine::WorkerThreadProc()
 
                             memcpy(Payload, &newId, sizeof(newId));
 
-                            QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = AssignId}});
+                            QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = Peer, .SendData = Message, .Type = AssignId}});
                         } else {
                             printf("Client received RequestId message!\n");
                             // TODO: kill connection.
@@ -128,9 +128,9 @@ QuicLanEngine::WorkerThreadProc()
 
                     case AssignId:
                         if (!Peer->Server) {
-                            if (WorkItem.ControlMessage.RecvData.Length != sizeof(uint16_t)) {
+                            if (WorkItem.ControlMessageRecv.RecvData.Length != sizeof(uint16_t)) {
                                 printf("Client received invalid AssignId message. Length: %u vs. %u\n",
-                                WorkItem.ControlMessage.RecvData.Length,
+                                WorkItem.ControlMessageRecv.RecvData.Length,
                                 sizeof(uint16_t));
                                 break;
                             }
@@ -165,18 +165,18 @@ QuicLanEngine::WorkerThreadProc()
 
                         memcpy(Payload, &ID, sizeof(ID));
 
-                        QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = Peer, .SendData = Message, .Type = IAmMe}});
+                        QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = Peer, .SendData = Message, .Type = IAmMe}});
                         break;
                     }
 
                     case IAmMe: {
-                        if (WorkItem.ControlMessage.RecvData.Length != sizeof(uint16_t)) {
+                        if (WorkItem.ControlMessageRecv.RecvData.Length != sizeof(uint16_t)) {
                             printf("Received invalid IAmMe message. Length: %u vs. %u\n",
-                            WorkItem.ControlMessage.RecvData.Length,
+                            WorkItem.ControlMessageRecv.RecvData.Length,
                             sizeof(uint16_t));
                             break;
                         }
-                        auto Peer = WorkItem.ControlMessage.Peer;
+                        auto Peer = WorkItem.ControlMessageRecv.Peer;
                         // ID is in network-order.
                         memcpy(&Peer->ID, RecvData.Buffer, sizeof(uint16_t));
                         ConvertIdToAddress(Peer->ID, Peer->InternalAddress4, Peer->InternalAddress6);
@@ -188,25 +188,25 @@ QuicLanEngine::WorkerThreadProc()
                         break;
                     }
 
-                    if (WorkItem.ControlMessage.RecvData.Length > 0) {
-                        delete[] WorkItem.ControlMessage.RecvData.Buffer;
+                    if (WorkItem.ControlMessageRecv.RecvData.Length > 0) {
+                        delete[] WorkItem.ControlMessageRecv.RecvData.Buffer;
                     }
 
                     break;
                 }
 
                 case ControlMessageSend: {
-                    switch (WorkItem.ControlMessage.Type) {
+                    switch (WorkItem.ControlMessageSend.Type) {
                     case RequestId: {
                         QuicLanMessage* Message = QuicLanMessageAlloc(0);
                         if (Message == nullptr) {
-                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessage.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessageSend.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
                             break;
                         }
                         QuicLanMessageHeaderFormat(RequestId, ID, 0, Message->Buffer);
 
                         if (ControlStreamSend(
-                            WorkItem.ControlMessage.Peer,
+                            WorkItem.ControlMessageSend.Peer,
                             Message,
                             "Client failed to send requestId message!\n")) {
                             // TODO: Create retry logic
@@ -217,8 +217,8 @@ QuicLanEngine::WorkerThreadProc()
 
                     case AssignId: {
                         ControlStreamSend(
-                            WorkItem.ControlMessage.Peer,
-                            WorkItem.ControlMessage.SendData,
+                            WorkItem.ControlMessageSend.Peer,
+                            WorkItem.ControlMessageSend.SendData,
                             "Server failed to send AssignId message to client!\n");
                         break;
                     }
@@ -226,25 +226,25 @@ QuicLanEngine::WorkerThreadProc()
                     case WhoAreYou: {
                         QuicLanMessage* Message = QuicLanMessageAlloc(0);
                         if (Message == nullptr) {
-                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessage.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
+                            QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {WorkItem.ControlMessageSend.Peer, QUIC_STATUS_INTERNAL_ERROR, true}});
                             break;
                         }
                         QuicLanMessageHeaderFormat(WhoAreYou, ID, 0, Message->Buffer);
 
-                        ControlStreamSend(WorkItem.ControlMessage.Peer, Message, "Client failed to send WhoAreYou message!\n");
+                        ControlStreamSend(WorkItem.ControlMessageSend.Peer, Message, "Client failed to send WhoAreYou message!\n");
                         break;
                     }
 
                     case IAmMe: {
                         ControlStreamSend(
-                            WorkItem.ControlMessage.Peer,
-                            WorkItem.ControlMessage.SendData,
+                            WorkItem.ControlMessageSend.Peer,
+                            WorkItem.ControlMessageSend.SendData,
                             "Server failed to send IAmMe message to client.\n");
                         break;
                     }
 
                     default:
-                        printf("Unimplemented ControlMessageSend type %d\n", WorkItem.ControlMessage.Type);
+                        printf("Unimplemented ControlMessageSend type %d\n", WorkItem.ControlMessageSend.Type);
                         break;
                     }
                     break;
@@ -823,14 +823,14 @@ QuicLanEngine::ClientConnectionCallback(
         }
 
         if (This->FirstConnection && This->State.IdUnknown) {
-            This->Engine->QueueWorkItem({.Type = ControlMessageSend, .ControlMessage = {.Peer = This, .Type = WhoAreYou}});
+            This->Engine->QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = This, .Type = WhoAreYou}});
 
         } else if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
             // Start client by requesting IP address.
             QuicLanWorkItem WorkItem;
             WorkItem.Type = ControlMessageSend;
-            WorkItem.ControlMessage.Type = RequestId;
-            WorkItem.ControlMessage.Peer = This;
+            WorkItem.ControlMessageSend.Type = RequestId;
+            WorkItem.ControlMessageSend.Peer = This;
             This->Engine->QueueWorkItem(WorkItem);
         }
         break;
@@ -1111,7 +1111,7 @@ QuicLanEngine::ReceiveControlStreamCallback(
                 }
                 RecvCtx->Peer->Engine->QueueWorkItem({
                     .Type = ControlMessageReceived,
-                    .ControlMessage = {
+                    .ControlMessageRecv = {
                         .Peer = RecvCtx->Peer,
                         .RecvData = RecvCtx->Data,
                         .Type = RecvCtx->Type}});
