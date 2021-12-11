@@ -147,7 +147,7 @@ QuicLanEngine::WorkerThreadProc()
                             TunnelEvent.IpAddressReady.IPv6Addr =
                                 inet_ntop(AF_INET6, &Ip6VpnAddress.Ipv6.sin6_addr, Ip6TunnelAddress, sizeof(Ip6TunnelAddress));
                             TunnelEvent.Type = TunnelIpAddressReady;
-                            EventHandler(&TunnelEvent);
+                            EventHandler(&TunnelEvent, Context);
                         } else {
                             printf("Server received AssignId message!\n");
                             // TODO: Kill connection.
@@ -266,7 +266,7 @@ QuicLanEngine::WorkerThreadProc()
                         QuicLanTunnelEvent TunnelEvent;
                         TunnelEvent.Type = TunnelMtuChanged;
                         TunnelEvent.MtuChanged.Mtu = MaxDatagramLength;
-                        EventHandler(&TunnelEvent);
+                        EventHandler(&TunnelEvent, Context);
                     }
                     break;
                 }
@@ -276,7 +276,7 @@ QuicLanEngine::WorkerThreadProc()
                     TunnelEvent.Type = TunnelPacketReceived;
                     TunnelEvent.PacketReceived.Packet = WorkItem.RecvPacket.Packet.Buffer;
                     TunnelEvent.PacketReceived.PacketLength = WorkItem.RecvPacket.Packet.Length;
-                    EventHandler(&TunnelEvent);
+                    EventHandler(&TunnelEvent, Context);
                     delete[] WorkItem.RecvPacket.Packet.Buffer; // TODO: return to lookaside list.
                     break;
                 }
@@ -284,7 +284,7 @@ QuicLanEngine::WorkerThreadProc()
                 case RemovePeer: {
                     auto Peer = WorkItem.RemovePeer.Peer;
                     auto it = Peers.begin();
-                    while(*it != Peer) it++;
+                    while(it != Peers.end() && *it != Peer) it++;
                     if (it != Peers.end()) {
                         Peers.erase(it);
                         Peer->Inserted = false;
@@ -295,7 +295,7 @@ QuicLanEngine::WorkerThreadProc()
                     if (Peers.size() == 0) {
                         QuicLanTunnelEvent Event;
                         Event.Type = TunnelDisconnected;
-                        EventHandler(&Event);
+                        EventHandler(&Event, Context);
                     }
                     break;
                 }
@@ -379,7 +379,8 @@ QuicLanEngine::WorkerThreadProc()
 bool
 QuicLanEngine::Initialize(
     _In_z_ const char* Password,
-    _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler)
+    _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+    _In_ void* Context)
 {
     QUIC_STATUS Status = MsQuicOpen(&MsQuic);
     if (QUIC_FAILED(Status)) {
@@ -402,6 +403,7 @@ QuicLanEngine::Initialize(
 
     this->EventHandler = EventHandler;
     this->Password = Password;
+    this->Context = Context;
 
     return true;
 };
@@ -628,7 +630,7 @@ QuicLanEngine::StartServer(
             inet_ntop(AF_INET, &Ip4VpnAddress.Ipv4.sin_addr, VpnAddress4, sizeof(VpnAddress4));
         TunnelEvent.IpAddressReady.IPv6Addr =
             inet_ntop(AF_INET6, &Ip6VpnAddress.Ipv6.sin6_addr, VpnAddress6, sizeof(VpnAddress6));
-        EventHandler(&TunnelEvent);
+        EventHandler(&TunnelEvent, Context);
     }
 
     return QUIC_SUCCEEDED(Status);

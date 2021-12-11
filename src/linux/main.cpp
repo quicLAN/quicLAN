@@ -82,7 +82,7 @@ TunnelReadThread() {
     }
 }
 
-void TunnelEventCallback(QuicLanTunnelEvent* Event) {
+void TunnelEventCallback(QuicLanTunnelEvent* Event, void* Context) {
     switch (Event->Type) {
         case TunnelIpAddressReady: {
             struct ifreq ifr;
@@ -166,7 +166,7 @@ void TunnelEventCallback(QuicLanTunnelEvent* Event) {
 int main(int argc, char** argv)
 {
     int junk;
-    if (!InitializeQuicLanEngine("ToDo:GetFromCommandline", TunnelEventCallback, &Engine)) {
+    if (!InitializeQuicLanEngine("ToDo:GetFromCommandline", TunnelEventCallback, nullptr, &Engine)) {
         printf("Failed to initialize QuicLanEngine!\n");
         return -1;
     }

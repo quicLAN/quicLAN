@@ -6,8 +6,11 @@
 #include <atomic>
 #include "../core/messages.h"
 
-bool
-TestMessageGenerateParse()
+/*
+    Uses the Message header functions to generate a valid message header
+    and then parses that header and ensures both succeed.
+*/
+TEST(Messages, TestGenerateParse)
 {
     QuicLanMessageHeader GeneratedHeader;
     uint32_t Offset = 0;
@@ -19,52 +22,21 @@ TestMessageGenerateParse()
     uint32_t ParsedLength = 0;
 
     QuicLanMessageHeaderFormat(Type, Host, Length, (uint8_t*)&GeneratedHeader);
-    if (Type != GeneratedHeader.Type) {
-        printf(
-            "Header type doesn't match input type: %x vs %x!\n",
-            Type,
-            GeneratedHeader.Type);
-        return false;
-    }
-    if (Host != GeneratedHeader.HostId) {
-        printf(
-            "Header HostId doesn't match input HostId: %x vs %x!\n",
-            Host,
-            GeneratedHeader.HostId);
-        return false;
-    }
+    ASSERT_EQ(Type, GeneratedHeader.Type);
+    ASSERT_EQ(Host, GeneratedHeader.HostId);
 
-    if (!QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength)) {
-        printf("Generated header failed to parse!\n");
-        return false;
-    }
+    ASSERT_TRUE(QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength));
 
-    if (Type != ParsedType) {
-        printf(
-            "Parsed type doesn't match original type: %x vs %x!\n",
-            Type,
-            ParsedType);
-        return false;
-    }
-    if (Host != ParsedHost) {
-        printf(
-            "Parsed HostId doesn't match original HostId: %x vs %x!\n",
-            Host,
-            ParsedHost);
-        return false;
-    }
-    if (Length != ParsedLength) {
-        printf(
-            "Parsed Length doesn't match original Length: %x vs %x!\n",
-            Length,
-            ParsedLength);
-        return false;
-    }
-    return true;
+    ASSERT_EQ(Type, ParsedType);
+    ASSERT_EQ(Host, ParsedHost);
+    ASSERT_EQ(Length, ParsedLength);
 }
 
-bool
-TestMessageParseFail()
+
+/*
+    Tests that the message header parser correctly fails invalid message headers.
+*/
+TEST(Messages, TestParseFail)
 {
     using namespace std::chrono;
     QuicLanMessageHeader GeneratedHeader;
@@ -76,28 +48,13 @@ TestMessageParseFail()
     uint32_t ParsedLength;
 
     QuicLanMessageHeaderFormat(InvalidMessage, Host, Length, (uint8_t*)&GeneratedHeader);
-    if (QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength)) {
-        printf(
-            "Parsed failed to reject %s!\n",
-            "invalidMessage type");
-        return false;
-    }
+    ASSERT_FALSE(QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength));
 
     QuicLanMessageHeaderFormat(MaxMessageType, Host, Length, (uint8_t*)&GeneratedHeader);
-    if (QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength)) {
-        printf(
-            "Parsed failed to reject %s!\n",
-            "MaxMessage type");
-        return false;
-    }
+    ASSERT_FALSE(QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength));
 
     QuicLanMessageHeaderFormat((QuicLanMessageType)((uint8_t)MaxMessageType + 1), Host, Length, (uint8_t*)&GeneratedHeader);
-    if (QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength)) {
-        printf(
-            "Parsed failed to reject %s!\n",
-            "MaxMessage+1 type");
-        return false;
-    }
+    ASSERT_FALSE(QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength));
 
     QuicLanMessageHeaderFormat(RequestId, Host, Length, (uint8_t*)&GeneratedHeader);
     int64_t FiveMinutesFromNow = duration_cast<milliseconds>(system_clock::now().time_since_epoch() + QuicLanMessageExpiration).count();
@@ -105,11 +62,5 @@ TestMessageParseFail()
     GeneratedHeader.Timestamp[0] = (FiveMinutesFromNow >> 16) & 0xff;
     GeneratedHeader.Timestamp[1] = (FiveMinutesFromNow >> 8) & 0xff;
     GeneratedHeader.Timestamp[2] = FiveMinutesFromNow & 0xff;
-    if (QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength)) {
-        printf(
-            "Parsed failed to reject %s!\n",
-            "too old timestamp");
-        return false;
-    }
-    return true;
+    ASSERT_FALSE(QuicLanMessageHeaderParse((uint8_t*)&GeneratedHeader, Offset, ParsedType, ParsedHost, ParsedLength));
 }

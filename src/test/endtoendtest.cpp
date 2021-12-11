@@ -3,76 +3,16 @@
 */
 #include "tests.h"
 
-const char* TestPassword = "TestPassword";
 
-std::string ServerEnginev4Address;
-std::string ServerEnginev6Address;
-std::string ClientEnginev4Address;
-std::string ClientEnginev6Address;
-uint16_t ServerEngineMtu = 0;
-uint16_t ClientEngineMtu = 0;
-bool ServerEngineReceivedData = false;
-bool ClientEngineReceivedData = false;
-
-std::mutex ServerEngineMutex;
-std::mutex ClientEngineMutex;
-
-std::condition_variable ServerEngineCv;
-std::condition_variable ClientEngineCv;
-
-void
-BasicConnectionListener1(QuicLanTunnelEvent* Event)
-{
-    switch (Event->Type) {
-    case TunnelIpAddressReady: {
-        std::unique_lock lk(ServerEngineMutex);
-        ServerEnginev4Address = Event->IpAddressReady.IPv4Addr;
-        ServerEnginev6Address = Event->IpAddressReady.IPv6Addr;
-        lk.unlock();
-        ServerEngineCv.notify_all();
-        break;
-    }
-    case TunnelMtuChanged:
-        ServerEngineMtu = Event->MtuChanged.Mtu;
-        break;
-    case TunnelPacketReceived: {
-        std::unique_lock lk(ServerEngineMutex);
-        ServerEngineReceivedData = true;
-        lk.unlock();
-        ServerEngineCv.notify_all();
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-void
-BasicConnectionListener2(QuicLanTunnelEvent* Event)
-{
-    switch (Event->Type) {
-    case TunnelIpAddressReady: {
-        std::unique_lock lk(ClientEngineMutex);
-        ClientEnginev4Address = Event->IpAddressReady.IPv4Addr;
-        ClientEnginev6Address = Event->IpAddressReady.IPv6Addr;
-        lk.unlock();
-        ClientEngineCv.notify_all();
-        break;
-    }
-    case TunnelMtuChanged:
-        ClientEngineMtu = Event->MtuChanged.Mtu;
-        break;
-    case TunnelPacketReceived: {
-        std::unique_lock lk(ClientEngineMutex);
-        ClientEngineReceivedData = true;
-        lk.unlock();
-        ClientEngineCv.notify_all();
-        break;
-    }
-    default:
-        break;
-    }
-}
+struct EngineScope {
+    QuicLanEngine* Handle;
+    EngineScope() noexcept : Handle(nullptr) { }
+    EngineScope(QuicLanEngine* handle) noexcept : Handle(handle) { }
+    ~EngineScope() noexcept { reset(); }
+    operator QuicLanEngine*() const noexcept { return Handle; }
+    QuicLanEngine** operator&() noexcept {reset(); return &Handle; }
+    void reset(QuicLanEngine* Engine = nullptr) {if (Handle) UninitializeQuicLanEngine(Handle); Handle = Engine; }
+};
 
 inline
 void
@@ -88,115 +28,177 @@ PopulateHeader(
     Header->ip_len = htons(Length);
 }
 
-bool
-TestBasicConnection()
+const char* const TestPassword = "TestPassword";
+const char* const BadPassword = "BadPassword";
+
+struct TestEngine {
+    EngineScope Engine;
+    std::string v4Address;
+    std::string v6Address;
+
+    std::string Password;
+
+    uint16_t Mtu = 0;
+    bool ReceivedData = false;
+
+    bool Disconnected = false;
+
+    std::mutex EngineMutex;
+    std::condition_variable EngineCv;
+
+    bool ExpectConnectionFail = false;
+
+    static
+    void Handler(QuicLanTunnelEvent* Event, void* Context)
+    {
+        auto This = (TestEngine*)Context;
+        switch (Event->Type) {
+        case TunnelIpAddressReady: {
+            std::unique_lock lk(This->EngineMutex);
+            This->v4Address = Event->IpAddressReady.IPv4Addr;
+            This->v6Address = Event->IpAddressReady.IPv6Addr;
+            lk.unlock();
+            This->EngineCv.notify_all();
+            break;
+        }
+        case TunnelMtuChanged:
+            This->Mtu = Event->MtuChanged.Mtu;
+            break;
+        case TunnelPacketReceived: {
+            std::unique_lock lk(This->EngineMutex);
+            This->ReceivedData = true;
+            lk.unlock();
+            This->EngineCv.notify_all();
+            break;
+        }
+        case TunnelDisconnected: {
+            std::unique_lock lk(This->EngineMutex);
+            This->Disconnected = true;
+            lk.unlock();
+            This->EngineCv.notify_all();
+            break;
+        }
+        default:
+            break;
+        }
+    };
+
+    void
+    Initialize() {
+        ASSERT_TRUE(InitializeQuicLanEngine(Password.c_str(), Handler, this, &Engine));
+    }
+
+    void
+    AddServer(const char* const Address, uint16_t Port = DEFAULT_QUICLAN_SERVER_PORT) {
+        ASSERT_TRUE(::AddServer(Engine, Address, Port));
+    }
+
+    void
+    Start(uint16_t ListenPort = DEFAULT_QUICLAN_SERVER_PORT) {
+        ASSERT_TRUE(::Start(Engine, ListenPort));
+    }
+
+    void
+    SendPacket(const char* const DestAddr) {
+        auto Packet = RequestPacket(Engine);
+
+        // Populate packets with valid IPv4 header matching destination IP address
+        PopulateHeader(
+            (struct ip*) Packet->Buffer,
+            v4Address.c_str(),
+            DestAddr,
+            Mtu);
+
+        ASSERT_TRUE(Send(Engine, Packet));
+    }
+
+    void
+    Stop() {
+        ASSERT_TRUE(::Stop(Engine));
+    }
+
+    void
+    WaitForIpAddress() {
+        std::unique_lock lk(EngineMutex);
+        EngineCv.wait(lk, [this]{return v4Address.length() > 0;});
+        // printf("IP4 Address %s\n", 4Address.c_str());
+        // printf("IP6 Address %s\n", v6Address.c_str());
+    }
+
+    void
+    WaitForPacketReceived() {
+        std::unique_lock lk(EngineMutex);
+        EngineCv.wait(lk, [this]{return ReceivedData;});
+    }
+
+    void
+    WaitForDisconnected() {
+        std::unique_lock lk(EngineMutex);
+        EngineCv.wait(lk, [this]{return Disconnected;});
+    }
+};
+
+void
+RunTest(
+    TestEngine& ServerEngine,
+    TestEngine& ClientEngine,
+    bool ExpectConnectionFail)
 {
-    bool Result = true;
-    QuicLanEngine* ServerEngine = nullptr;
-    QuicLanEngine* ClientEngine = nullptr;
-    QuicLanPacket* ServerEnginePacket = nullptr;
-    QuicLanPacket* ClientEnginePacket = nullptr;
+    ServerEngine.Initialize();
+    ClientEngine.Initialize();
 
-    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener1, &ServerEngine)) {
-        Result = false;
-        printf("Failed initializing ServerEngine\n");
-        goto Cleanup;
+    ClientEngine.AddServer("127.0.0.1");
+
+    ServerEngine.Start();
+    ClientEngine.Start(DEFAULT_QUICLAN_SERVER_PORT+1);
+
+    if (ExpectConnectionFail) {
+        ClientEngine.WaitForDisconnected();
+        ServerEngine.Stop();
+        ClientEngine.Stop();
+        return;
     }
 
-    if (!InitializeQuicLanEngine(TestPassword, BasicConnectionListener2, &ClientEngine)) {
-        Result = false;
-        printf("Failed initializing ClientEngine\n");
-        goto Cleanup;
-    }
+    ServerEngine.WaitForIpAddress();
+    ClientEngine.WaitForIpAddress();
 
-    if (!AddServer(ClientEngine, "127.0.0.1", DEFAULT_QUICLAN_SERVER_PORT)) {
-        Result = false;
-        printf("Failed adding server to ClientEngine\n");
-        goto Cleanup;
-    }
+    ClientEngine.SendPacket(ServerEngine.v4Address.c_str());
+    ServerEngine.SendPacket(ClientEngine.v4Address.c_str());
 
-    if (!Start(ServerEngine, DEFAULT_QUICLAN_SERVER_PORT)) {
-        Result = false;
-        printf("Failed starting ServerEngine\n");
-        goto Cleanup;
-    }
+    ServerEngine.WaitForPacketReceived();
+    ClientEngine.WaitForPacketReceived();
 
-    if (!Start(ClientEngine, DEFAULT_QUICLAN_SERVER_PORT+1)) {
-        Result = false;
-        printf("Failed starting ClientEngine\n");
-        goto Cleanup;
-    }
+    ASSERT_TRUE(ServerEngine.ReceivedData);
+    ASSERT_TRUE(ClientEngine.ReceivedData);
 
-    {
-        // Wait for ServerEngine to get an IP address
-        std::unique_lock lk(ServerEngineMutex);
-        ServerEngineCv.wait(lk, []{return ServerEnginev4Address.length() > 0;});
-        printf("ServerEngine IP4 Address %s\n", ServerEnginev4Address.c_str());
-        printf("ServerEngine IP6 Address %s\n", ServerEnginev6Address.c_str());
-    }
-    {
-        // Wait for ClientEngine to get an IP address
-        std::unique_lock lk(ClientEngineMutex);
-        ClientEngineCv.wait(lk, []{return ClientEnginev4Address.length() > 0;});
-        printf("ClientEngine IP4 address %s\n", ClientEnginev4Address.c_str());
-        printf("ClientEngine IP6 address %s\n", ClientEnginev6Address.c_str());
-    }
+    ServerEngine.Stop();
+    ClientEngine.Stop();
+}
 
-    ServerEnginePacket = RequestPacket(ServerEngine);
-    ClientEnginePacket = RequestPacket(ClientEngine);
+/*
+    A basic test that just starts a client and server and connects and send a datagram packet through.
+*/
+TEST(E2E, TestBasicConnection)
+{
+    TestEngine Server;
+    TestEngine Client;
+    Server.Password = TestPassword;
+    Client.Password = TestPassword;
+    RunTest(Server, Client, false);
+}
 
-    // Populate packets with valid IPv4 header matching destination IP address
-    PopulateHeader(
-        (struct ip*) ServerEnginePacket->Buffer,
-        ServerEnginev4Address.c_str(),
-        ClientEnginev4Address.c_str(),
-        ServerEngineMtu);
+TEST(E2E, TestBasicConnectionEmptyPassword)
+{
+    TestEngine Server;
+    TestEngine Client;
+    RunTest(Server, Client, false);
+}
 
-    PopulateHeader(
-        (struct ip*) ClientEnginePacket->Buffer,
-        ClientEnginev4Address.c_str(),
-        ServerEnginev4Address.c_str(),
-        ClientEngineMtu);
-
-    if (!Send(ServerEngine, ServerEnginePacket)) {
-        Result = false;
-        printf("Failed sending ServerEngine! ServerEngineMtu: %u\n",ServerEngineMtu);
-        goto Cleanup;
-    }
-    if (!Send(ClientEngine, ClientEnginePacket)) {
-        Result = false;
-        printf("Failed sending ClientEngine! ClientEngineMtu: %u\n", ClientEngineMtu);
-        goto Cleanup;
-    }
-
-    {
-        // Wait for ServerEngine to get a packet
-        std::unique_lock lk(ServerEngineMutex);
-        ServerEngineCv.wait(lk, []{return ServerEngineReceivedData;});
-    }
-    {
-        // Wait for ClientEngine to get a packet
-        std::unique_lock lk(ClientEngineMutex);
-        ClientEngineCv.wait(lk, []{return ClientEngineReceivedData;});
-    }
-
-    assert(ServerEngineReceivedData);
-    assert(ClientEngineReceivedData);
-
-    printf("Packets received and test passed!\n");
-
-    if (!Stop(ServerEngine)) {
-        Result = false;
-        printf("Failed stopping ServerEngine\n");
-    }
-    if (!Stop(ClientEngine)) {
-        Result = false;
-        printf("Failed stopping ClientEngine\n");
-    }
-
-Cleanup:
-    UninitializeQuicLanEngine(ServerEngine);
-    UninitializeQuicLanEngine(ClientEngine);
-
-    return Result;
+TEST(E2E, TestBasicConnectionBadPassword)
+{
+    TestEngine Server;
+    TestEngine Client;
+    Server.Password = TestPassword;
+    Client.Password = BadPassword;
+    RunTest(Server, Client, true);
 }
