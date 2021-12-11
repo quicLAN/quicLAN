@@ -147,8 +147,8 @@ struct BasicConnectionTestContext {
         if (ExpectConnectionFail) {
             std::unique_lock lk(ClientEngineMutex);
             ClientEngineCv.wait(lk, [this]{return ClientDisconnected;});
-            ASSERT_TRUE(Stop(ClientEngine));
             ASSERT_TRUE(Stop(ServerEngine));
+            ASSERT_TRUE(Stop(ClientEngine));
             return;
         }
 
@@ -213,6 +213,12 @@ struct BasicConnectionTestContext {
 TEST(E2E, TestBasicConnection)
 {
     BasicConnectionTestContext Conn(TestPassword, TestPassword);
+    Conn.Run();
+}
+
+TEST(E2E, TestBasicConnectionEmptyPassword)
+{
+    BasicConnectionTestContext Conn;
     Conn.Run();
 }
 
