@@ -250,6 +250,8 @@ QuicLanVerifyCertificate(
     int Ret = 0;
     bool Result = false;
 
+    CxPlatZeroMemory(Salt, sizeof(Salt));
+
     const ASN1_INTEGER* const SerialNumber = X509_get_serialNumber(PeerCert);
 
     SaltBn = ASN1_INTEGER_to_BN(SerialNumber, nullptr);
@@ -258,13 +260,13 @@ QuicLanVerifyCertificate(
         goto Error;
     }
 
-    if (BN_num_bytes(SaltBn) != sizeof(Salt)) {
+    if (BN_num_bytes(SaltBn) > sizeof(Salt)) {
         printf("Serial number is not correct size! %u vs %u\n", BN_num_bytes(SaltBn), sizeof(Salt));
         goto Error;
     }
 
     Ret = BN_bn2bin(SaltBn, Salt);
-    if (Ret != sizeof(Salt)) {
+    if (Ret > sizeof(Salt)) {
         printf("BIGNUM conversion to binary is wrong size! %u vs %u\n", Ret, sizeof(Salt));
         goto Error;
     }
