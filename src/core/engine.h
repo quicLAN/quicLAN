@@ -39,7 +39,8 @@ struct QuicLanEngine {
     bool
     Initialize(
         _In_z_ const char* Password,
-        _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler);
+        _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+        _In_ void* Context);
 
     bool
     StartClient();
@@ -131,6 +132,7 @@ struct QuicLanEngine {
     HQUIC Listener;
 
     FN_TUNNEL_EVENT_CALLBACK EventHandler;
+    void* Context;
 
     std::string Password;
 

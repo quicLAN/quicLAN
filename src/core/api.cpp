@@ -7,6 +7,7 @@ bool
 InitializeQuicLanEngine(
     _In_z_ const char* Password,
     _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+    _In_ void* Context,
     _Out_ QuicLanEngine** Engine)
 {
     if (Engine == nullptr) {
@@ -19,7 +20,7 @@ InitializeQuicLanEngine(
         printf("Failed to allocate engine!\n");
         return false;
     }
-    if (!NewEngine->Initialize(Password, EventHandler)) {
+    if (!NewEngine->Initialize(Password, EventHandler, Context)) {
         delete NewEngine;
         return false;
     }

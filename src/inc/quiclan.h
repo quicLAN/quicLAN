@@ -43,12 +43,14 @@ struct QuicLanTunnelEvent {
 typedef
 void
 (*FN_TUNNEL_EVENT_CALLBACK)(
-    QuicLanTunnelEvent* Event);
+    QuicLanTunnelEvent* Event,
+    void* Context);
 
 bool
 InitializeQuicLanEngine(
     _In_z_ const char* Password,
     _In_ FN_TUNNEL_EVENT_CALLBACK EventHandler,
+    _In_ void* Context,
     _Out_ QuicLanEngine** Engine);
 
 bool
