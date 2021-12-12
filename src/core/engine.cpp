@@ -82,7 +82,15 @@ QuicLanEngine::WorkerThreadProc()
                         if (Peer->Server) {
                             std::minstd_rand Rng;
                             // TODO: support IPv6 external addresses.
-                            Rng.seed(Peer->ExternalAddress.Ipv4.sin_addr.s_addr);
+                            if (Peer->ExternalAddress.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET) {
+                                Rng.seed(Peer->ExternalAddress.Ipv4.sin_addr.s_addr);
+                            } else {
+                                auto Seed = Peer->ExternalAddress.Ipv6.sin6_addr.s6_addr32[0];
+                                for (auto i = 1; i < 4; ++i) {
+                                    Seed ^= Peer->ExternalAddress.Ipv6.sin6_addr.s6_addr32[i];
+                                }
+                                Rng.seed(Seed);
+                            }
                             bool Generate = true;
                             uint16_t newId = 0;
                             do {
