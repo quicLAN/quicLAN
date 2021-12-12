@@ -3,6 +3,23 @@
 */
 #include "tests.h"
 
+struct FamilyArgs {
+    int Family;
+    static ::std::vector<FamilyArgs> Generate() {
+        ::std::vector<FamilyArgs> list;
+        for (int Family : { 4, 6 })
+            list.push_back({ Family });
+        return list;
+    }
+};
+
+std::ostream& operator << (std::ostream& o, const FamilyArgs& args) {
+    return o << (args.Family == 4 ? "v4" : "v6");
+}
+
+class WithFamilyArgs : public testing::Test,
+    public testing::WithParamInterface<FamilyArgs> {
+};
 
 struct EngineScope {
     QuicLanEngine* Handle;
@@ -142,12 +159,13 @@ void
 RunTest(
     TestEngine& ServerEngine,
     TestEngine& ClientEngine,
-    bool ExpectConnectionFail)
+    int Family = 4,
+    bool ExpectConnectionFail = false)
 {
     ServerEngine.Initialize();
     ClientEngine.Initialize();
 
-    ClientEngine.AddServer("127.0.0.1");
+    ClientEngine.AddServer(Family == 4 ? "127.0.0.1" : "::1");
 
     ServerEngine.Start();
     ClientEngine.Start(DEFAULT_QUICLAN_SERVER_PORT+1);
@@ -178,27 +196,32 @@ RunTest(
 /*
     A basic test that just starts a client and server and connects and send a datagram packet through.
 */
-TEST(E2E, TestBasicConnection)
+TEST_P(WithFamilyArgs, TestBasicConnection)
 {
     TestEngine Server;
     TestEngine Client;
     Server.Password = TestPassword;
     Client.Password = TestPassword;
-    RunTest(Server, Client, false);
+    RunTest(Server, Client, GetParam().Family, false);
 }
 
 TEST(E2E, TestBasicConnectionEmptyPassword)
 {
     TestEngine Server;
     TestEngine Client;
-    RunTest(Server, Client, false);
+    RunTest(Server, Client);
 }
 
-TEST(E2E, TestBasicConnectionBadPassword)
+TEST_P(WithFamilyArgs, TestBasicConnectionBadPassword)
 {
     TestEngine Server;
     TestEngine Client;
     Server.Password = TestPassword;
     Client.Password = BadPassword;
-    RunTest(Server, Client, true);
+    RunTest(Server, Client, GetParam().Family, true);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    E2E,
+    WithFamilyArgs,
+    ::testing::ValuesIn(FamilyArgs::Generate()));
