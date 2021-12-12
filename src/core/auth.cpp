@@ -277,15 +277,20 @@ QuicLanVerifyCertificate(
     }
 
     Ret = X509_verify(PeerCert, SigningKey);
-    if (Ret == 0) {
+    if (Ret == 1) {
+        Result = true;
+    } else if (Ret == 0) {
         printf("Certificate failed signature verification!\n");
         goto Error;
     } else if (Ret == -1) {
         printf("Certificate signature is malformed!\n");
+        ERR_print_errors_cb([](const char* str, size_t len, void* u){printf("%s\n", str); return 1;}, nullptr);
+        goto Error;
+    } else {
+        printf("Certificate failed validation for another reason!\n");
+        ERR_print_errors_cb([](const char* str, size_t len, void* u){printf("%s\n", str); return 1;}, nullptr);
         goto Error;
     }
-
-    Result = true;
 
 Error:
     if (SaltBn != nullptr) {
