@@ -2,27 +2,11 @@
 project(quiclan)
 cmake_minimum_required(VERSION 3.17)
 
-# Necessary to include msquic headers
-if ("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
-    set(QUIC_PLATFORM "windows")
-    set(QUICLAN_C_FLAGS "-DWIN32_LEAN_AND_MEAN -DSECURITY_WIN32 /MP")
-else()
-    set(QUIC_PLATFORM "linux")
-    set(QUICLAN_COMMON_FLAGS "-DCX_PLATFORM_LINUX -fms-extensions -fPIC -pthread -Wl,--no-as-needed -ldl")
-
-    set(QUICLAN_C_FLAGS "${QUICLAN_COMMON_FLAGS}")
-    set(QUICLAN_CXX_FLAGS "${QUICLAN_COMMON_FLAGS} --std=c++20 -g -Wno-reorder -Wno-sign-compare -Wno-format")
-endif()
-
-
 set(QUICLAN_FOLDER_PREFIX "" CACHE STRING "Optional prefix for source group folders when using an IDE generator")
 set(QUICLAN_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/inc)
 
-#include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/src/inc)
 # Use the same OpenSSL version as MsQuic
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/submodules/msquic/submodules/openssl/include)
-# include_directories(${CMAKE_SOURCE_DIR}/submodules/msquic/submodules/googletest/googletest/include)
-#include_directories(${CMAKE_SOURCE_DIR}/src/inc)
 
 set(QUIC_TLS "openssl")
 set(QUIC_BUILD_TOOLS OFF CACHE BOOL "Don't use the tools")
@@ -35,7 +19,7 @@ add_subdirectory(submodules/msquic)
 target_compile_features(inc INTERFACE cxx_std_20)
 #set_property(TARGET msquic PROPERTY QUIC_ENABLE_LOGGING ON)
 #find_package(msquic PATHS submodules/msquic)
-# add_subdirectory(src/inc)
+add_subdirectory(src/inc)
 add_subdirectory(src/core)
 add_subdirectory(src/linux)
 

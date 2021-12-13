@@ -9,4 +9,4 @@ target_include_directories(quiclaninc INTERFACE ${QUICLAN_INCLUDE_DIR})
 target_compile_features(quiclaninc INTERFACE cxx_std_20)
 target_compile_features(quiclaninc INTERFACE c_std_11)
 
-target_link_libraries(quiclaninc inc)
+target_link_libraries(quiclaninc INTERFACE inc)
