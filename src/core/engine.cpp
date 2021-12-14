@@ -801,7 +801,7 @@ QuicLanEngine::ClientConnectionCallback(
 
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
-        printf("[conn][%p] Connected\n", Connection);
+        printf("[conn][%p] Client connected\n", Connection);
         if (!This->Engine->QueueWorkItem({.Type = AddPeer, .AddPeer = {This}})) {
             This->Engine->MsQuic->ConnectionShutdown(Connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, QUIC_STATUS_INTERNAL_ERROR);
         }
@@ -817,7 +817,7 @@ QuicLanEngine::ClientConnectionCallback(
         This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
-        printf("[conn][%p] Complete\n", Connection);
+        printf("[conn][%p] Client complete\n", Connection);
         This->State.Disconnected = true;
         if (!This->Inserted) {
             This->Engine->MsQuic->ConnectionClose(Connection);
@@ -925,7 +925,7 @@ QuicLanEngine::ServerConnectionCallback(
         This->Engine->QueueWorkItem({.Type = QuicLanWorkItemType::RemovePeer, .RemovePeer = {This, 0, false}});
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
-        printf("[conn][%p] Complete\n", Connection);
+        printf("[conn][%p] Server complete\n", Connection);
         This->State.Disconnected = true;
         if (!This->Inserted) {
             This->Engine->MsQuic->ConnectionClose(Connection);
@@ -933,6 +933,7 @@ QuicLanEngine::ServerConnectionCallback(
         }
         break;
     case QUIC_CONNECTION_EVENT_CONNECTED: {
+        printf("[conn][%p] Server connected\n", Connection);
         QUIC_SETTINGS Settings{};
         Settings.PeerUnidiStreamCount = UniDiStreamCount;
         Settings.IsSet.PeerUnidiStreamCount = true;
