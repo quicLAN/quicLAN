@@ -15,7 +15,7 @@ InitializeQuicLanEngine(
     }
     *Engine = nullptr;
 
-    QuicLanEngine* NewEngine = new(std::nothrow) QuicLanEngine;
+    QuicLanEngine* NewEngine = new(std::nothrow) QuicLanEngine();
     if (NewEngine == nullptr) {
         printf("Failed to allocate engine!\n");
         return false;

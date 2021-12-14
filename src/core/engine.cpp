@@ -44,14 +44,14 @@ QuicLanEngine::WorkerThreadProc()
     std::unique_lock<std::mutex> lock(WorkItemsLock);
     while (true) {
         WorkItemsCv.wait(lock);
-        if (ShuttingDown) {
+        if (Stopped) {
             return;
         }
         if (WorkItems.empty()) {
             continue;
         }
         while (!WorkItems.empty()) {
-            if (ShuttingDown) {
+            if (Stopped) {
                 return;
             }
             std::list<QuicLanWorkItem> Batch{};
@@ -357,7 +357,6 @@ QuicLanEngine::WorkerThreadProc()
                     std::unique_lock Lock(StopLock);
                     MsQuic->ListenerStop(Listener);
                     // TODO: Inform all peers of the disconnect
-                    ShuttingDown = true;
                     for (auto Peer : Peers) {
                         Peer->State.Disconnecting = true;
                         Peer->Inserted = false;
@@ -367,6 +366,7 @@ QuicLanEngine::WorkerThreadProc()
                             0);
                     }
                     Peers.clear();
+                    Stopped = true;
                     StopLock.unlock();
                     StopCv.notify_one();
                     break;
@@ -690,9 +690,10 @@ QuicLanEngine::Send(
 bool
 QuicLanEngine::Stop()
 {
+    Stopped = false;
     bool result = QueueWorkItem({.Type = Shutdown});
     std::unique_lock Lock(StopLock);
-    StopCv.wait(Lock);
+    StopCv.wait(Lock, [this]{return Stopped.load();});
     return result;
 }
 
