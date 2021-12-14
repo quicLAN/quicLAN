@@ -5,9 +5,6 @@ cmake_minimum_required(VERSION 3.17)
 set(QUICLAN_FOLDER_PREFIX "" CACHE STRING "Optional prefix for source group folders when using an IDE generator")
 set(QUICLAN_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/inc)
 
-# Use the same OpenSSL version as MsQuic
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/submodules/msquic/submodules/openssl/include)
-
 set(QUIC_TLS "openssl")
 set(QUIC_BUILD_TOOLS OFF CACHE BOOL "Don't use the tools")
 set(QUIC_BUILD_TEST OFF CACHE BOOL "Don't need the tests")

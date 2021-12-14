@@ -2,12 +2,15 @@
     Licensed under the MIT License.
 */
 #include "precomp.h"
-#include "crypto/evp.h"
 #include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/pkcs12.h"
 #include "openssl/rand.h"
 #include "openssl/x509v3.h"
+
+#ifndef ED448_KEYLEN
+#define ED448_KEYLEN 57
+#endif
 
 const int PBKDFIterations = 10000;
 const int SigningSaltLength = 64;
