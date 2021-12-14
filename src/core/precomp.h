@@ -7,10 +7,6 @@
 #include <msquichelper.h>
 #include <quiclan.h>
 
-// These will need to be moved into a platform abstraction layer
-#include <netinet/ip.h>
-#include <netinet/ip6.h>
-#include <endian.h>
 // MsQuic headers define min/max macros. Undefine them.
 #undef min
 #undef max

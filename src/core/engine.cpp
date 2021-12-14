@@ -29,13 +29,24 @@ const uint16_t UniDiStreamCount = 1;
 const uint32_t WorkItemBatchSize = 10;
 const uint32_t MaxDatagramsOutstanding = 50;
 
+struct ipv6_header {
+    uint32_t version : 4;
+    uint32_t traffic : 8;
+    uint32_t label : 20;
+    uint16_t length;
+    uint8_t next;
+    uint8_t hop;
+    in6_addr source;
+    in6_addr dest;
+};
+
 void
 ConvertIdToAddress(uint16_t Id, QUIC_ADDR& Ip4Addr, QUIC_ADDR& Ip6Addr)
 {
     Ip4Addr.Ipv4.sin_addr.s_addr = (Id << 16) + (254u << 8) + 169;
-    memcpy(Ip6Addr.Ipv6.sin6_addr.__in6_u.__u6_addr8, QuicLanIpv6Prefix, sizeof(QuicLanIpv6Prefix));
-    memset(&Ip6Addr.Ipv6.sin6_addr.__in6_u.__u6_addr8[8], 0, sizeof(in6_addr) - 8);
-    Ip6Addr.Ipv6.sin6_addr.__in6_u.__u6_addr16[7] = Id;
+    memcpy(Ip6Addr.Ipv6.sin6_addr.s6_addr, QuicLanIpv6Prefix, sizeof(QuicLanIpv6Prefix));
+    memset(&Ip6Addr.Ipv6.sin6_addr.s6_addr[8], 0, sizeof(in6_addr) - 8);
+    Ip6Addr.Ipv6.sin6_addr.s6_addr16[7] = Id;
 }
 
 void
@@ -81,7 +92,6 @@ QuicLanEngine::WorkerThreadProc()
                         assert(RecvData.Length == 0);
                         if (Peer->Server) {
                             std::minstd_rand Rng;
-                            // TODO: support IPv6 external addresses.
                             if (Peer->ExternalAddress.Ip.sa_family == QUIC_ADDRESS_FAMILY_INET) {
                                 Rng.seed(Peer->ExternalAddress.Ipv4.sin_addr.s_addr);
                             } else {
@@ -312,7 +322,7 @@ QuicLanEngine::WorkerThreadProc()
                     QuicLanPeerContext* FoundPeer = nullptr;
                     auto SendBuffer = WorkItem.SendPacket.Packet;
                     struct ip* Ip4Header = nullptr;
-                    struct ip6_hdr* Ip6Header = nullptr;
+                    ipv6_header* Ip6Header = nullptr;
                     if ((SendBuffer->Buffer[0] & 0xF0) >> 4 == 4) {
                         Ip4Header = (struct ip*) SendBuffer->Buffer;
                         for (auto Peer : Peers) {
@@ -323,9 +333,9 @@ QuicLanEngine::WorkerThreadProc()
                         }
                     } else {
                         assert((SendBuffer->Buffer[0] & 0xF0) >> 4 == 6);
-                        Ip6Header = (struct ip6_hdr*) SendBuffer->Buffer;
+                        Ip6Header = (ipv6_header*) SendBuffer->Buffer;
                         for (auto Peer : Peers) {
-                            if (memcmp(&Peer->InternalAddress6.Ipv6.sin6_addr, &Ip6Header->ip6_dst, sizeof(in6_addr)) == 0) {
+                            if (memcmp(&Peer->InternalAddress6.Ipv6.sin6_addr, &Ip6Header->dest, sizeof(in6_addr)) == 0) {
                                 FoundPeer = Peer;
                                 break;
                             }
