@@ -98,6 +98,10 @@ QuicLanGenerateAuthCertificate(
         goto Error;
     }
 
+    // Ensure the salt is the full length by setting the
+    // MSB to 1 always.
+    Salt[0] |= 0x80;
+
     Cert = X509_new();
     if (Cert == nullptr) {
         printf("Failed to allocate X509!\n");
@@ -263,13 +267,13 @@ QuicLanVerifyCertificate(
         goto Error;
     }
 
-    if (BN_num_bytes(SaltBn) > sizeof(Salt)) {
+    if (BN_num_bytes(SaltBn) != sizeof(Salt)) {
         printf("Serial number is not correct size! %u vs %u\n", BN_num_bytes(SaltBn), sizeof(Salt));
         goto Error;
     }
 
     Ret = BN_bn2bin(SaltBn, Salt);
-    if (Ret > sizeof(Salt)) {
+    if (Ret != sizeof(Salt)) {
         printf("BIGNUM conversion to binary is wrong size! %u vs %u\n", Ret, sizeof(Salt));
         goto Error;
     }
