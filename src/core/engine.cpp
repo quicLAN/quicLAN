@@ -419,6 +419,7 @@ QuicLanEngine::Initialize(
         return false;
     }
 
+    Stopped = false;
     this->EventHandler = EventHandler;
     this->Password = Password;
     this->Context = Context;
@@ -427,6 +428,8 @@ QuicLanEngine::Initialize(
 };
 
 QuicLanEngine::~QuicLanEngine() {
+
+    Stop();
 
     if (MsQuic != nullptr) {
         if (Listener != nullptr) {
@@ -700,9 +703,11 @@ QuicLanEngine::Send(
 bool
 QuicLanEngine::Stop()
 {
-    Stopped = false;
-    bool result = QueueWorkItem({.Type = Shutdown});
     std::unique_lock Lock(StopLock);
+    if (Stopped.load()) {
+        return true;
+    }
+    bool result = QueueWorkItem({.Type = Shutdown});
     StopCv.wait(Lock, [this]{return Stopped.load();});
     return result;
 }
