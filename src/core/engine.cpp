@@ -382,6 +382,9 @@ QuicLanEngine::WorkerThreadProc()
                     break;
                 }
 
+                case Exit:
+                    return;
+
                 default:
                     printf("Unimplemented WorkItem type %d\n", WorkItem.Type);
                     break;
@@ -451,7 +454,7 @@ QuicLanEngine::~QuicLanEngine() {
         MsQuicClose(MsQuic);
     }
     // Poke worker thread to exit.
-    QueueWorkItem({});
+    QueueWorkItem({.Type = Exit});
     WorkerThread.join();
 };
 

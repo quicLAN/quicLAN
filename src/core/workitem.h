@@ -12,7 +12,8 @@ enum QuicLanWorkItemType {
     ReceivePacket,
     RemovePeer,
     SendPacket,
-    Shutdown
+    Shutdown,
+    Exit
 };
 
 struct QuicLanWorkItem {
