@@ -412,6 +412,7 @@ QuicLanEngine::Initialize(
         return false;
     }
 
+    Stopped = false;
     try {
         WorkerThread = std::thread(QuicLanEngine::WorkerThreadProc, this);
     } catch (...) {
@@ -419,7 +420,6 @@ QuicLanEngine::Initialize(
         return false;
     }
 
-    Stopped = false;
     this->EventHandler = EventHandler;
     this->Password = Password;
     this->Context = Context;
