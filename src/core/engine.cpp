@@ -10,10 +10,14 @@
     3) if client announced, does this solve duplicate IP addresses?
 
     client Connects:
-    1) authenticates to server
-    2) requests ID
-    3) requests external IP address
-    4) Requests external IP->ID map of rest of swarm.
+    1)  requests all known peers
+    2)  connects to all known peers
+    2a) peers that fail to connect are asked to connect back
+    3)  asks all connected peers to provide list of known peers
+    4)  Picks an ID that is not in the uniqified list of known peers
+    5)  Sends a message to all peers asking if that ID is in use
+    6)  Waits 3 seconds and sends another message to all peers asking if ID is in use
+    7)  Assigns that ID to itself and informs all peers that is the selected ID
 */
 
 const QUIC_REGISTRATION_CONFIG RegConfig = { "quiclan", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
@@ -199,6 +203,7 @@ QuicLanEngine::WorkerThreadProc()
                         memcpy(&Peer->ID, RecvData.Buffer, sizeof(uint16_t));
                         ConvertIdToAddress(Peer->ID, Peer->InternalAddress4, Peer->InternalAddress6);
                         Peer->State.IdUnknown = false;
+                        QueueWorkItem({.Type = ProcessState, .ProcessState = {.Peer = Peer}});
                         break;
                     }
 
@@ -249,7 +254,9 @@ QuicLanEngine::WorkerThreadProc()
                         }
                         QuicLanMessageHeaderFormat(WhoAreYou, ID, 0, Message->Buffer);
 
-                        ControlStreamSend(WorkItem.ControlMessageSend.Peer, Message, "Client failed to send WhoAreYou message!\n");
+                        if (ControlStreamSend(WorkItem.ControlMessageSend.Peer, Message, "Client failed to send WhoAreYou message!\n")) {
+                            WorkItem.ControlMessageSend.Peer->State.IdRequested = true;
+                        }
                         break;
                     }
 
@@ -285,6 +292,18 @@ QuicLanEngine::WorkerThreadProc()
                         TunnelEvent.Type = TunnelMtuChanged;
                         TunnelEvent.MtuChanged.Mtu = MaxDatagramLength;
                         EventHandler(&TunnelEvent, Context);
+                    }
+                    break;
+                }
+
+                case ProcessState: {
+                    auto Peer = WorkItem.ProcessState.Peer;
+                    if (Peer->FirstConnection && Peer->State.IdUnknown && !Peer->State.IdRequested) {
+                        QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = Peer, .Type = WhoAreYou}});
+
+                    } else if (Peer->FirstConnection && !IdAssigned && !IdRequested) {
+                        // Start client by requesting IP address.
+                        QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = Peer, .Type = RequestId}});
                     }
                     break;
                 }
@@ -531,6 +550,7 @@ QuicLanEngine::StartClient()
     Peer->Engine = this;
     Peer->FirstConnection = true;
     Peer->State.IdUnknown = true;
+    Peer->State.IdRequested = false;
     Status =
         MsQuic->ConnectionOpen(
             Registration,
@@ -851,16 +871,8 @@ QuicLanEngine::ClientConnectionCallback(
                 Event->STREAMS_AVAILABLE.UnidirectionalCount);
         }
 
-        if (This->FirstConnection && This->State.IdUnknown) {
-            This->Engine->QueueWorkItem({.Type = ControlMessageSend, .ControlMessageSend = {.Peer = This, .Type = WhoAreYou}});
-
-        } else if (This->FirstConnection && !This->Engine->IdAssigned && !This->Engine->IdRequested) {
-            // Start client by requesting IP address.
-            QuicLanWorkItem WorkItem;
-            WorkItem.Type = ControlMessageSend;
-            WorkItem.ControlMessageSend.Type = RequestId;
-            WorkItem.ControlMessageSend.Peer = This;
-            This->Engine->QueueWorkItem(WorkItem);
+        if(!This->Engine->QueueWorkItem({.Type = ProcessState, .ProcessState = {.Peer = This}})) {
+            // TODO: clean up without allocating memory.
         }
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
