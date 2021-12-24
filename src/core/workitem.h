@@ -9,6 +9,7 @@ enum QuicLanWorkItemType {
     ControlMessageReceived,
     ControlMessageSend,
     MtuChanged,
+    ProcessState,
     ReceivePacket,
     RemovePeer,
     SendPacket,
@@ -37,6 +38,9 @@ struct QuicLanWorkItem {
             QuicLanPeerContext* Peer;
             uint16_t NewMtu;
         } MtuChanged;
+        struct {
+            QuicLanPeerContext* Peer;
+        } ProcessState;
         struct {
             QUIC_BUFFER Packet;
         } RecvPacket;

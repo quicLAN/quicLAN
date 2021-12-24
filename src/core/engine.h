@@ -12,6 +12,7 @@ struct QuicLanPeerContext {
     QUIC_ADDR InternalAddress6; // Ditto.
     struct {
         uint32_t IdUnknown : 1;
+        uint32_t IdRequested : 1;
         uint32_t Connected : 1;
         uint32_t Authenticated : 1;
         uint32_t TimedOut : 1;
